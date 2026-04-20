@@ -13,10 +13,23 @@ export interface PublicPlayer {
 }
 
 export interface RevealItem {
-  submissionId: string;
-  authorId: string;
-  authorName: string; // hidden until reveal phase has finished server-side
+  // For player submissions: submissionId + authorId set, isTruth false.
+  // For fib games' hidden truth: submissionId null, authorId null, isTruth true.
+  submissionId: string | null;
+  authorId: string | null;
+  authorName: string | null; // only populated during SCORE phase
   text: string;
+  isTruth: boolean;
+}
+
+export interface GameCard {
+  id: string;
+  name: string;
+  tagline: string;
+  description: string;
+  scoring: "take" | "fib";
+  usesCriterion: boolean;
+  accent: "ember" | "neon" | "sol" | "orchid";
 }
 
 export interface RoomSnapshot {
@@ -26,11 +39,15 @@ export interface RoomSnapshot {
   hostPlayerId: string | null;
   familyMode: boolean;
   streamerMode: boolean;
+  selectedGameId: string;
+  currentGameId: string; // game the current round (or last round) was played with
   players: PublicPlayer[];
   audienceCount: number;
+  games: GameCard[];
   round: {
     number: number;
     total: number;
+    gameId: string;
     prompt: string | null;
     criterionLabel: string | null;
     // criterion is hidden during SUBMIT (secret criterion) and revealed at VOTE.
@@ -58,7 +75,7 @@ export interface ClientToServerEvents {
   "host:startMatch": (cb: (res: ActionResult) => void) => void;
   "host:nextPhase": (cb: (res: ActionResult) => void) => void;
   "host:updateSettings": (
-    p: { familyMode?: boolean; streamerMode?: boolean },
+    p: { familyMode?: boolean; streamerMode?: boolean; selectedGameId?: string },
     cb: (res: ActionResult) => void
   ) => void;
   "host:endMatch": (cb: (res: ActionResult) => void) => void;

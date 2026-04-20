@@ -41,14 +41,15 @@ enum FlagReason {
 }
 
 model Room {
-  id           String     @id @default(cuid())
-  code         String     @unique
-  status       RoomStatus @default(LOBBY)
-  hostPlayerId String?    @unique
-  familyMode   Boolean    @default(false)
-  streamerMode Boolean    @default(false)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  id              String     @id @default(cuid())
+  code            String     @unique
+  status          RoomStatus @default(LOBBY)
+  hostPlayerId    String?    @unique
+  familyMode      Boolean    @default(false)
+  streamerMode    Boolean    @default(false)
+  selectedGameId  String     @default("hot-take-hustle")
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 
   players Player[]
   matches Match[]
@@ -80,6 +81,7 @@ model Player {
 model Match {
   id            String      @id @default(cuid())
   roomId        String
+  gameId        String      @default("hot-take-hustle")
   status        MatchStatus @default(PENDING)
   totalRounds   Int         @default(5)
   currentRound  Int         @default(0)
@@ -90,6 +92,7 @@ model Match {
   rounds Round[]
 
   @@index([roomId])
+  @@index([gameId])
 }
 
 model Round {
@@ -114,18 +117,22 @@ model Round {
 
 model Prompt {
   id        String   @id @default(cuid())
+  gameId    String   @default("hot-take-hustle")
   text      String
+  truth     String?
   rating    Rating   @default(STANDARD)
   tag       String?
   createdAt DateTime @default(now())
 
   rounds Round[]
 
+  @@index([gameId])
   @@index([rating])
 }
 
 model Criterion {
   id        String   @id @default(cuid())
+  gameId    String   @default("hot-take-hustle")
   label     String
   rating    Rating   @default(STANDARD)
   hint      String?
@@ -133,6 +140,7 @@ model Criterion {
 
   rounds Round[]
 
+  @@index([gameId])
   @@index([rating])
 }
 
@@ -155,13 +163,16 @@ model Vote {
   id           String   @id @default(cuid())
   roundId      String
   voterId      String
-  submissionId String
+  // Null for "truth" votes in fib-style games (where the voter picks the hidden
+  // ground truth rather than another player's submission).
+  submissionId String?
+  forTruth     Boolean  @default(false)
   weight       Float    @default(1.0)
   createdAt    DateTime @default(now())
 
-  round      Round      @relation(fields: [roundId], references: [id], onDelete: Cascade)
-  voter      Player     @relation(fields: [voterId], references: [id], onDelete: Cascade)
-  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  round      Round       @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  voter      Player      @relation(fields: [voterId], references: [id], onDelete: Cascade)
+  submission Submission? @relation(fields: [submissionId], references: [id], onDelete: Cascade)
 
   @@unique([roundId, voterId])
   @@index([submissionId])

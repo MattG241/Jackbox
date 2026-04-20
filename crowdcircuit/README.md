@@ -1,6 +1,6 @@
 # CrowdCircuit
 
-An original browser-based multiplayer party game platform. One host screen, phones as controllers, 3–10 players plus unlimited audience. Ships with the first original mini-game, **Hot Take Hustle**.
+An original browser-based multiplayer party game platform. One host screen, phones as controllers, 3–10 players plus unlimited audience. Ships with **10 original mini-games** that share a common state machine and game registry.
 
 ## Stack
 
@@ -45,6 +45,27 @@ npm run dev
 ```
 
 Open the host view on your TV/laptop by going to `http://localhost:3000`, hit **Create room**, copy the 4-letter code. Players open the same URL (or `/play`) on their phones, paste the code, go.
+
+## The game pack
+
+All 10 games share a single state machine (LOBBY → SUBMIT → REVEAL → VOTE → SCORE → MATCH_END) and are described declaratively in `src/games/registry.ts`. The host picks a game from the lobby; the server loads that game's prompt pool at match start.
+
+Two scoring modes are supported:
+- **`take`** — authors score from votes received; sharp voters who pick the top take score a bonus.
+- **`fib`** — a hidden truth is mixed in with fake answers; voters score for picking the truth, liars score for fooling other voters.
+
+| Game | Pitch | Scoring |
+| --- | --- | --- |
+| Hot Take Hustle | Silly prompts, sharp takes, **secret** criterion revealed at vote time | take |
+| Pitch Party | Two random concepts — pitch a startup that somehow combines them | take |
+| Bad Advice Booth | A real problem, the worst possible advice wins | take |
+| Hype Machine | A mundane object, hype it to keynote level | take |
+| Scene Stealer | A scene setup, the single line that steals the scene | take |
+| Crowd Fibs | Trivia question with a real answer; write fake answers that sound true — voters must spot the truth | **fib** |
+| Caption Chaos | Absurd scene description, write the caption that wins the internet | take |
+| Villain Origin | A tiny inconvenience, write the villain origin it caused | take |
+| Fortune Forge | A theme, write the cursed fortune cookie | take |
+| Red Flag Rally | A suspicious trait, write context that flips it green | take |
 
 ## Hot Take Hustle — how it plays
 

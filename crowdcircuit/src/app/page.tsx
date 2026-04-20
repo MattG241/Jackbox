@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { CreateRoomForm } from "@/components/CreateRoomForm";
 import { JoinRoomForm } from "@/components/JoinRoomForm";
+import { GAME_LIST } from "@/games/registry";
 
 export default function Landing() {
   return (
@@ -55,6 +56,37 @@ export default function Landing() {
             <div className="mt-2 text-sm text-mist/70">{f.body}</div>
           </div>
         ))}
+      </section>
+
+      <section id="games" className="mt-24">
+        <div className="flex items-end justify-between">
+          <div>
+            <h2 className="text-3xl font-semibold">The pack</h2>
+            <p className="mt-1 text-mist/70">
+              {GAME_LIST.length} original games in one room. Host picks the vibe.
+            </p>
+          </div>
+          <div className="hidden text-xs text-mist/60 sm:block">
+            All legally distinct. All ours.
+          </div>
+        </div>
+        <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          {GAME_LIST.map((g) => {
+            const accent = {
+              ember: "text-ember",
+              neon: "text-neon",
+              sol: "text-sol",
+              orchid: "text-orchid",
+            }[g.accent];
+            return (
+              <div key={g.id} className="cc-card p-4">
+                <div className={`text-sm font-semibold ${accent}`}>{g.name}</div>
+                <div className="mt-1 text-xs italic text-mist/70">{g.tagline}</div>
+                <div className="mt-2 text-xs text-mist/60 line-clamp-4">{g.description}</div>
+              </div>
+            );
+          })}
+        </div>
       </section>
 
       <section id="how" className="mt-24">

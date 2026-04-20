@@ -4,23 +4,40 @@ import { useMemo, useState } from "react";
 import { useRoomStore } from "@/stores/useRoomStore";
 import { getSocket } from "@/lib/socketClient";
 import { Countdown } from "./Countdown";
+import type { GameCard } from "@/lib/types";
 
 export function PlayerView() {
   const { snapshot, session } = useRoomStore();
   if (!snapshot || !session) return <Loader />;
   const me = snapshot.players.find((p) => p.id === session.playerId);
   const audience = session.isAudience;
+  const game = snapshot.games.find(
+    (g) =>
+      g.id === (snapshot.round?.gameId ?? snapshot.currentGameId ?? snapshot.selectedGameId)
+  );
 
   return (
     <main className="mx-auto flex min-h-[100dvh] w-full max-w-md flex-col gap-4 px-4 py-6">
-      <Header audience={audience} displayName={session.displayName} code={snapshot.code} />
-      {snapshot.phase === "LOBBY" && <LobbyCard audience={audience} />}
+      <Header
+        audience={audience}
+        displayName={session.displayName}
+        code={snapshot.code}
+        gameName={game?.name ?? null}
+      />
+      {snapshot.phase === "LOBBY" && <LobbyCard audience={audience} game={game ?? null} />}
       {snapshot.phase === "SUBMIT" && !audience && (
-        <SubmitCard submitted={!!me && !!snapshot.round?.submittedPlayerIds.includes(me.id)} />
+        <SubmitCard
+          submitted={!!me && !!snapshot.round?.submittedPlayerIds.includes(me.id)}
+          game={game ?? null}
+        />
       )}
-      {snapshot.phase === "SUBMIT" && audience && <WaitingCard text="Players are writing takes. Stay loud." />}
-      {snapshot.phase === "REVEAL" && <WaitingCard text="Takes are being revealed on the big screen." />}
-      {snapshot.phase === "VOTE" && <VoteCard />}
+      {snapshot.phase === "SUBMIT" && audience && (
+        <WaitingCard text="Players are writing answers. Stay loud." />
+      )}
+      {snapshot.phase === "REVEAL" && (
+        <WaitingCard text="Answers are being revealed on the big screen." />
+      )}
+      {snapshot.phase === "VOTE" && <VoteCard game={game ?? null} />}
       {snapshot.phase === "SCORE" && <ScoreCard />}
       {snapshot.phase === "MATCH_END" && <EndCard />}
       <div aria-live="polite" className="mt-auto text-center text-xs text-mist/40">
@@ -34,15 +51,20 @@ function Header({
   audience,
   displayName,
   code,
+  gameName,
 }: {
   audience: boolean;
   displayName: string;
   code: string;
+  gameName: string | null;
 }) {
   return (
     <header className="flex items-center justify-between">
       <div>
-        <div className="text-xs uppercase tracking-widest text-mist/60">{audience ? "Audience" : "Player"}</div>
+        <div className="text-xs uppercase tracking-widest text-mist/60">
+          {audience ? "Audience" : "Player"}
+          {gameName ? ` • ${gameName}` : ""}
+        </div>
         <div className="text-lg font-semibold">{displayName}</div>
       </div>
       <div className="text-right">
@@ -53,20 +75,33 @@ function Header({
   );
 }
 
-function LobbyCard({ audience }: { audience: boolean }) {
+function LobbyCard({ audience, game }: { audience: boolean; game: GameCard | null }) {
   return (
     <div className="cc-card p-5">
       <h2 className="text-xl font-semibold">You&apos;re in.</h2>
-      <p className="mt-1 text-sm text-mist/70">
+      {game && (
+        <div className="mt-2 rounded-xl bg-white/5 p-3 text-sm">
+          <div className="text-xs uppercase tracking-widest text-mist/60">Next up</div>
+          <div className="mt-1 font-semibold">{game.name}</div>
+          <div className="text-mist/70">{game.tagline}</div>
+        </div>
+      )}
+      <p className="mt-3 text-sm text-mist/70">
         {audience
-          ? "You're in audience mode — you'll vote but won't submit takes."
+          ? "You're in audience mode — you'll vote but won't submit."
           : "The host will start the match. Loosen your thumbs."}
       </p>
     </div>
   );
 }
 
-function SubmitCard({ submitted }: { submitted: boolean }) {
+function SubmitCard({
+  submitted,
+  game,
+}: {
+  submitted: boolean;
+  game: GameCard | null;
+}) {
   const { snapshot } = useRoomStore();
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -84,28 +119,32 @@ function SubmitCard({ submitted }: { submitted: boolean }) {
     });
   }
 
-  if (!round) return null;
+  if (!round || !game) return null;
+  const placeholder = placeholderForGame(game.id);
+  const label = labelForGame(game.id);
 
   return (
     <div className="cc-card p-5">
       <div className="flex items-center justify-between text-xs text-mist/60">
-        <span>Round {round.number} of {round.total}</span>
+        <span>
+          {game.name} • Round {round.number}/{round.total}
+        </span>
         <Countdown endsAt={round.phaseEndsAt} />
       </div>
       <h2 className="mt-2 text-lg font-semibold leading-snug">{round.prompt}</h2>
       {submitted ? (
         <div className="mt-4 rounded-xl bg-neon/15 p-4 text-neon">
-          Take submitted. You can tweak it until time runs out.
+          Locked in. You can tweak it until time runs out.
         </div>
       ) : null}
       <form onSubmit={submit} className="mt-4">
         <label htmlFor="take" className="sr-only">
-          Your take
+          {label}
         </label>
         <textarea
           id="take"
           className="cc-input min-h-[120px] text-base"
-          placeholder="Type your take…"
+          placeholder={placeholder}
           maxLength={140}
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -121,7 +160,7 @@ function SubmitCard({ submitted }: { submitted: boolean }) {
           disabled={busy || text.trim().length === 0}
           className="cc-btn-primary mt-3 w-full"
         >
-          {submitted ? "Update take" : "Submit take"}
+          {submitted ? "Update answer" : "Submit answer"}
         </button>
       </form>
     </div>
@@ -137,7 +176,7 @@ function WaitingCard({ text }: { text: string }) {
   );
 }
 
-function VoteCard() {
+function VoteCard({ game }: { game: GameCard | null }) {
   const { snapshot, session } = useRoomStore();
   const round = snapshot?.round;
   const [error, setError] = useState<string | null>(null);
@@ -147,43 +186,57 @@ function VoteCard() {
     () => (myId && round ? round.votedVoterIds.includes(myId) : false),
     [round, myId]
   );
+  const isFib = game?.scoring === "fib";
 
-  function vote(submissionId: string, ownSubmission: boolean) {
+  function vote(submissionId: string | null, ownSubmission: boolean) {
     if (ownSubmission) {
-      setError("You can't vote for your own take.");
+      setError("You can't vote for your own answer.");
       return;
     }
     setBusy(true);
     setError(null);
-    getSocket().emit("player:vote", { submissionId }, (res) => {
-      setBusy(false);
-      if (!res.ok) setError(res.reason);
-    });
+    getSocket().emit(
+      "player:vote",
+      { submissionId: submissionId ?? "__truth__" },
+      (res) => {
+        setBusy(false);
+        if (!res.ok) setError(res.reason);
+      }
+    );
   }
 
-  if (!round) return null;
+  if (!round || !game) return null;
   return (
     <div className="cc-card p-5">
       <div className="flex items-center justify-between text-xs text-mist/60">
-        <span>Vote for the {round.criterionLabel}</span>
+        <span>
+          {isFib
+            ? "Pick the real answer"
+            : round.criterionLabel
+            ? `Vote for the ${round.criterionLabel.toLowerCase()}`
+            : "Vote"}
+        </span>
         <Countdown endsAt={round.phaseEndsAt} />
       </div>
       <h3 className="mt-2 text-base font-semibold text-mist/80">{round.prompt}</h3>
       <div className="mt-4 space-y-2">
         {round.reveal.map((item, i) => {
-          const mine = item.authorId === myId;
+          const mine = item.authorId && item.authorId === myId;
           return (
             <button
-              key={item.submissionId}
-              disabled={busy || alreadyVoted || mine}
-              onClick={() => vote(item.submissionId, mine)}
+              key={item.submissionId ?? `truth-${i}`}
+              disabled={busy || alreadyVoted || !!mine}
+              onClick={() => vote(item.submissionId, !!mine)}
               className={`w-full rounded-xl border p-4 text-left transition ${
                 mine
                   ? "border-white/5 bg-white/5 text-mist/50"
                   : "border-white/10 bg-white/5 hover:border-neon hover:bg-neon/10"
               }`}
             >
-              <div className="text-xs text-mist/50">Take {i + 1}{mine ? " (yours)" : ""}</div>
+              <div className="text-xs text-mist/50">
+                {isFib ? `Answer ${i + 1}` : `Take ${i + 1}`}
+                {mine ? " (yours)" : ""}
+              </div>
               <div className="mt-1 text-base">{item.text}</div>
             </button>
           );
@@ -244,4 +297,36 @@ function Loader() {
       </div>
     </main>
   );
+}
+
+function placeholderForGame(gameId: string): string {
+  const map: Record<string, string> = {
+    "hot-take-hustle": "Drop your take…",
+    "pitch-party": "Your one-sentence pitch…",
+    "bad-advice-booth": "The worst possible advice…",
+    "hype-machine": "Hype it up…",
+    "scene-stealer": "The line that steals the scene…",
+    "crowd-fibs": "Your fake answer (make it sound true)…",
+    "caption-chaos": "Your caption…",
+    "villain-origin": "The villain origin story…",
+    "fortune-forge": "Your fortune…",
+    "red-flag-rally": "Flip the flag…",
+  };
+  return map[gameId] ?? "Type your answer…";
+}
+
+function labelForGame(gameId: string): string {
+  const map: Record<string, string> = {
+    "hot-take-hustle": "Your take",
+    "pitch-party": "Your pitch",
+    "bad-advice-booth": "Your advice",
+    "hype-machine": "Your hype",
+    "scene-stealer": "Your line",
+    "crowd-fibs": "Your fake answer",
+    "caption-chaos": "Your caption",
+    "villain-origin": "Your origin",
+    "fortune-forge": "Your fortune",
+    "red-flag-rally": "Your flip",
+  };
+  return map[gameId] ?? "Your answer";
 }

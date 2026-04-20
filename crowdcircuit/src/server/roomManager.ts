@@ -1,6 +1,7 @@
 import type { Server } from "socket.io";
 import { prisma } from "@/lib/db";
 import type {
+  GameCard,
   Phase,
   PublicPlayer,
   RevealItem,
@@ -9,6 +10,7 @@ import type {
   ClientToServerEvents,
 } from "@/lib/types";
 import { shuffle } from "@/lib/utils";
+import { GAMES, GAME_LIST, getGame } from "@/games/registry";
 
 // Constants — mirror the MVP defaults spelled out in the spec.
 export const DEFAULTS = {
@@ -24,24 +26,26 @@ export const DEFAULTS = {
 
 type IO = Server<ClientToServerEvents, ServerToClientEvents>;
 
-// In-memory room state. The database is the authoritative persistence layer,
-// but we keep derived state + timers here for responsiveness. On server boot
-// nothing is eagerly hydrated: rooms load lazily when a socket resumes a session
-// or a host reconnects.
+// In-memory room state. DB is authoritative for persistence; we keep derived
+// state + phase timers here for responsiveness.
 interface LiveRoom {
   id: string;
   code: string;
   hostPlayerId: string | null;
   familyMode: boolean;
   streamerMode: boolean;
+  selectedGameId: string;
+  currentGameId: string;
   phase: Phase;
   matchId: string | null;
   round: {
     id: string;
     number: number;
     total: number;
+    gameId: string;
     promptText: string;
-    criterionLabel: string;
+    promptTruth: string | null;
+    criterionLabel: string | null;
     criterionHidden: boolean;
     phaseEndsAt: number | null;
     reveal: RevealItem[];
@@ -79,6 +83,8 @@ export async function ensureRoomLoaded(code: string): Promise<LiveRoom | null> {
     hostPlayerId: row.hostPlayerId,
     familyMode: row.familyMode,
     streamerMode: row.streamerMode,
+    selectedGameId: row.selectedGameId,
+    currentGameId: row.selectedGameId,
     phase: "LOBBY",
     matchId: null,
     round: null,
@@ -89,13 +95,24 @@ export async function ensureRoomLoaded(code: string): Promise<LiveRoom | null> {
   return live;
 }
 
+function toGameCards(): GameCard[] {
+  return GAME_LIST.map((g) => ({
+    id: g.id,
+    name: g.name,
+    tagline: g.tagline,
+    description: g.description,
+    scoring: g.scoring,
+    usesCriterion: g.usesCriterion,
+    accent: g.accent,
+  }));
+}
+
 export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
   const players = await prisma.player.findMany({
     where: { roomId: room.id },
     orderBy: { joinedAt: "asc" },
   });
 
-  // Total scores per player from the current match if any.
   const scoreByPlayer = new Map<string, number>();
   if (room.matchId) {
     const totals = await prisma.scoreEvent.groupBy({
@@ -133,6 +150,15 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
     votedIds = votes.map((v) => v.voterId);
   }
 
+  // Strip author names from reveal items until SCORE phase, to keep reveals
+  // anonymous. (submissionId + authorId are kept so clients can detect "mine".)
+  const revealForClient: RevealItem[] = room.round
+    ? room.round.reveal.map((r) => ({
+        ...r,
+        authorName: room.phase === "SCORE" ? r.authorName : null,
+      }))
+    : [];
+
   return {
     code: room.code,
     status: room.matchId ? "IN_MATCH" : "LOBBY",
@@ -140,18 +166,22 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
     hostPlayerId: room.hostPlayerId,
     familyMode: room.familyMode,
     streamerMode: room.streamerMode,
+    selectedGameId: room.selectedGameId,
+    currentGameId: room.currentGameId,
     players: corePlayers,
     audienceCount,
+    games: toGameCards(),
     round: room.round
       ? {
           number: room.round.number,
           total: room.round.total,
+          gameId: room.round.gameId,
           prompt: room.round.promptText,
           criterionLabel: room.round.criterionHidden ? null : room.round.criterionLabel,
           criterionHidden: room.round.criterionHidden,
           phaseEndsAt: room.round.phaseEndsAt,
           submittedPlayerIds: submittedIds,
-          reveal: room.round.reveal,
+          reveal: revealForClient,
           votedVoterIds: votedIds,
           roundSummary: room.round.roundSummary,
         }
@@ -187,9 +217,7 @@ export async function markDisconnected(io: IO, socketId: string) {
   if (!room) return;
   room.sockets.delete(socketId);
 
-  // Grace period: if the player doesn't reconnect in 10 seconds, mark offline.
   setTimeout(async () => {
-    // Is there still an active socket for this player? Use a scan over the context map.
     let stillConnected = false;
     for (const v of socketToContext.values()) {
       if (v.playerId === ctx.playerId) {
@@ -208,37 +236,57 @@ export async function markDisconnected(io: IO, socketId: string) {
   }, 10_000);
 }
 
-// ---- Game Engine (Hot Take Hustle) ----
+// ---- Shared Game Engine ----
 
 async function pickPromptAndCriterion(room: LiveRoom, usedPromptIds: Set<string>) {
-  const rating = room.familyMode ? "FAMILY" : undefined;
-  const prompts = await prisma.prompt.findMany({
-    where: rating ? { rating: "FAMILY" } : {},
-  });
-  const criteria = await prisma.criterion.findMany({
-    where: rating ? { rating: "FAMILY" } : {},
-  });
-  if (!prompts.length || !criteria.length) {
-    throw new Error("No prompts/criteria seeded. Run `npm run db:seed`.");
+  const def = getGame(room.currentGameId);
+  const promptWhere = {
+    gameId: def.id,
+    ...(room.familyMode ? { rating: "FAMILY" as const } : {}),
+  };
+  const prompts = await prisma.prompt.findMany({ where: promptWhere });
+  if (!prompts.length) {
+    // Family-mode fallback: use the full pool if we filtered everything out.
+    const all = await prisma.prompt.findMany({ where: { gameId: def.id } });
+    if (!all.length) throw new Error(`No prompts seeded for ${def.id}. Run db:seed.`);
+    prompts.push(...all);
   }
   const available = prompts.filter((p) => !usedPromptIds.has(p.id));
   const pool = available.length ? available : prompts;
   const prompt = pool[Math.floor(Math.random() * pool.length)];
-  const criterion = criteria[Math.floor(Math.random() * criteria.length)];
-  return { prompt, criterion };
+
+  let criterion: { id: string; label: string } | null = null;
+  if (def.usesCriterion) {
+    const critWhere = {
+      gameId: def.id,
+      ...(room.familyMode ? { rating: "FAMILY" as const } : {}),
+    };
+    let criteria = await prisma.criterion.findMany({ where: critWhere });
+    if (!criteria.length)
+      criteria = await prisma.criterion.findMany({ where: { gameId: def.id } });
+    if (!criteria.length)
+      throw new Error(`No criteria seeded for ${def.id}. Run db:seed.`);
+    criterion = criteria[Math.floor(Math.random() * criteria.length)];
+  }
+  return { prompt, criterion, def };
 }
 
 export async function startMatch(io: IO, room: LiveRoom, requesterPlayerId: string) {
   if (requesterPlayerId !== room.hostPlayerId) throw new Error("Only the host can start.");
+  if (!GAMES[room.selectedGameId])
+    throw new Error("Pick a game before starting the match.");
+
   const corePlayers = await prisma.player.count({
     where: { roomId: room.id, isAudience: false, connected: true },
   });
   if (corePlayers < DEFAULTS.MIN_PLAYERS)
     throw new Error(`Need at least ${DEFAULTS.MIN_PLAYERS} players.`);
 
+  room.currentGameId = room.selectedGameId;
   const match = await prisma.match.create({
     data: {
       roomId: room.id,
+      gameId: room.currentGameId,
       status: "RUNNING",
       totalRounds: DEFAULTS.TOTAL_ROUNDS,
       currentRound: 0,
@@ -266,13 +314,28 @@ async function advanceToNextRound(io: IO, room: LiveRoom) {
       .map((r) => r.promptId)
   );
 
-  const { prompt, criterion } = await pickPromptAndCriterion(room, usedPromptIds);
+  const { prompt, criterion, def } = await pickPromptAndCriterion(room, usedPromptIds);
+  // For games without criteria, pick a placeholder criterion row (created on the fly if missing).
+  let effectiveCriterion = criterion;
+  if (!effectiveCriterion) {
+    effectiveCriterion = await prisma.criterion.upsert({
+      where: { id: `sys-${def.id}-vote` },
+      update: {},
+      create: {
+        id: `sys-${def.id}-vote`,
+        gameId: def.id,
+        label: "__vote__",
+        rating: "FAMILY",
+      },
+    });
+  }
+
   const round = await prisma.round.create({
     data: {
       matchId: match.id,
       roundNumber: nextRoundNumber,
       promptId: prompt.id,
-      criterionId: criterion.id,
+      criterionId: effectiveCriterion.id,
       phase: "SUBMIT",
       phaseEndsAt: new Date(Date.now() + DEFAULTS.SUBMIT_SECONDS * 1000),
     },
@@ -287,9 +350,11 @@ async function advanceToNextRound(io: IO, room: LiveRoom) {
     id: round.id,
     number: nextRoundNumber,
     total: match.totalRounds,
+    gameId: def.id,
     promptText: prompt.text,
-    criterionLabel: criterion.label,
-    criterionHidden: true, // secret criterion!
+    promptTruth: prompt.truth ?? null,
+    criterionLabel: def.usesCriterion ? effectiveCriterion.label : null,
+    criterionHidden: def.usesCriterion && def.secretCriterion,
     phaseEndsAt: round.phaseEndsAt!.getTime(),
     reveal: [],
     roundSummary: null,
@@ -305,18 +370,31 @@ function schedulePhaseEnd(io: IO, room: LiveRoom, seconds: number, next: () => v
 
 async function enterRevealPhase(io: IO, room: LiveRoom) {
   if (!room.round) return;
+  const def = getGame(room.round.gameId);
+
   const submissions = await prisma.submission.findMany({
     where: { roundId: room.round.id },
     include: { player: { select: { id: true, displayName: true } } },
   });
-  const reveal: RevealItem[] = shuffle(
-    submissions.map((s) => ({
-      submissionId: s.id,
-      authorId: s.playerId,
-      authorName: s.player.displayName,
-      text: s.text,
-    }))
-  );
+  const items: RevealItem[] = submissions.map((s) => ({
+    submissionId: s.id,
+    authorId: s.playerId,
+    authorName: s.player.displayName,
+    text: s.text,
+    isTruth: false,
+  }));
+  // For fib games, inject the hidden truth as one of the items.
+  if (def.scoring === "fib" && room.round.promptTruth) {
+    items.push({
+      submissionId: null,
+      authorId: null,
+      authorName: null,
+      text: room.round.promptTruth,
+      isTruth: true,
+    });
+  }
+  const reveal = shuffle(items);
+
   room.phase = "REVEAL";
   room.round.phaseEndsAt = Date.now() + DEFAULTS.REVEAL_SECONDS * 1000;
   room.round.reveal = reveal;
@@ -331,7 +409,7 @@ async function enterRevealPhase(io: IO, room: LiveRoom) {
 async function enterVotePhase(io: IO, room: LiveRoom) {
   if (!room.round) return;
   room.phase = "VOTE";
-  room.round.criterionHidden = false; // secret criterion revealed here.
+  room.round.criterionHidden = false; // secret criterion revealed here (if any).
   room.round.phaseEndsAt = Date.now() + DEFAULTS.VOTE_SECONDS * 1000;
   await prisma.round.update({
     where: { id: room.round.id },
@@ -343,61 +421,80 @@ async function enterVotePhase(io: IO, room: LiveRoom) {
 
 async function enterScorePhase(io: IO, room: LiveRoom) {
   if (!room.round) return;
+  const def = getGame(room.round.gameId);
   const [submissions, votes, players] = await Promise.all([
     prisma.submission.findMany({ where: { roundId: room.round.id } }),
     prisma.vote.findMany({ where: { roundId: room.round.id } }),
     prisma.player.findMany({ where: { roomId: room.id } }),
   ]);
   const audienceSet = new Set(players.filter((p) => p.isAudience).map((p) => p.id));
-  // Each submission's weighted score.
-  const tally = new Map<string, number>(); // submissionId -> weighted votes
-  const voterCountBySubmission = new Map<string, number>();
-  for (const s of submissions) tally.set(s.id, 0);
-  for (const v of votes) {
-    const w = audienceSet.has(v.voterId) ? DEFAULTS.AUDIENCE_VOTE_WEIGHT : 1;
-    tally.set(v.submissionId, (tally.get(v.submissionId) ?? 0) + w);
-    voterCountBySubmission.set(
-      v.submissionId,
-      (voterCountBySubmission.get(v.submissionId) ?? 0) + 1
-    );
-  }
-
-  // Scoring rules:
-  //  - Top submission gets +1000 points.
-  //  - Each vote received grants +100 to the author (capped at 500).
-  //  - Voters who voted for the top submission get a +200 bonus (sharp voting).
-  //  - Writers who submitted receive +50 participation points.
   const submissionAuthor = new Map(submissions.map((s) => [s.id, s.playerId]));
-  let topSubmissionId: string | null = null;
-  let topScore = -1;
-  for (const [sid, score] of tally.entries()) {
-    if (score > topScore) {
-      topSubmissionId = sid;
-      topScore = score;
-    }
-  }
 
   const scoreDelta = new Map<string, number>();
-  function add(playerId: string, pts: number, reason: string) {
+  const scoreEvents: { roundId: string; playerId: string; points: number; reason: string }[] = [];
+  const add = (playerId: string, pts: number, reason: string) => {
     scoreDelta.set(playerId, (scoreDelta.get(playerId) ?? 0) + pts);
     scoreEvents.push({ roundId: room.round!.id, playerId, points: pts, reason });
-  }
-  const scoreEvents: { roundId: string; playerId: string; points: number; reason: string }[] = [];
+  };
 
-  for (const s of submissions) add(s.playerId, 50, "participation");
-  for (const [sid, count] of voterCountBySubmission.entries()) {
-    const authorId = submissionAuthor.get(sid);
-    if (!authorId) continue;
-    add(authorId, Math.min(500, count * 100), "votes_received");
-  }
-  if (topSubmissionId && topScore > 0) {
-    const topAuthor = submissionAuthor.get(topSubmissionId);
-    if (topAuthor) add(topAuthor, 1000, "top_take");
+  if (def.scoring === "take") {
+    // Participation + votes-received + top-take + sharp-voter bonus.
+    const tally = new Map<string, number>();
+    const voterCountBySubmission = new Map<string, number>();
+    for (const s of submissions) tally.set(s.id, 0);
     for (const v of votes) {
-      if (v.submissionId === topSubmissionId && !audienceSet.has(v.voterId)) {
-        add(v.voterId, 200, "sharp_voting");
+      if (!v.submissionId) continue;
+      const w = audienceSet.has(v.voterId) ? DEFAULTS.AUDIENCE_VOTE_WEIGHT : 1;
+      tally.set(v.submissionId, (tally.get(v.submissionId) ?? 0) + w);
+      voterCountBySubmission.set(
+        v.submissionId,
+        (voterCountBySubmission.get(v.submissionId) ?? 0) + 1
+      );
+    }
+    let topSubmissionId: string | null = null;
+    let topScore = -1;
+    for (const [sid, score] of tally.entries()) {
+      if (score > topScore) {
+        topSubmissionId = sid;
+        topScore = score;
       }
     }
+    for (const s of submissions) add(s.playerId, 50, "participation");
+    for (const [sid, count] of voterCountBySubmission.entries()) {
+      const authorId = submissionAuthor.get(sid);
+      if (!authorId) continue;
+      add(authorId, Math.min(500, count * 100), "votes_received");
+    }
+    if (topSubmissionId && topScore > 0) {
+      const topAuthor = submissionAuthor.get(topSubmissionId);
+      if (topAuthor) add(topAuthor, 1000, "top_take");
+      for (const v of votes) {
+        if (v.submissionId === topSubmissionId && !audienceSet.has(v.voterId)) {
+          add(v.voterId, 200, "sharp_voting");
+        }
+      }
+    }
+  } else {
+    // Fib scoring:
+    //  - +50 for writing a believable fake (participation)
+    //  - +750 for every voter who picks the hidden truth
+    //  - +500 for every person fooled into voting for your fib
+    //  - Audience votes weighted lighter on *fooling* (not on detecting truth)
+    const truthItem = room.round.reveal.find((r) => r.isTruth);
+    for (const s of submissions) add(s.playerId, 50, "fib_participation");
+    for (const v of votes) {
+      if (v.forTruth) {
+        add(v.voterId, 750, "detected_truth");
+        continue;
+      }
+      if (!v.submissionId) continue;
+      const author = submissionAuthor.get(v.submissionId);
+      if (author && author !== v.voterId) {
+        const weight = audienceSet.has(v.voterId) ? DEFAULTS.AUDIENCE_VOTE_WEIGHT : 1;
+        add(author, Math.round(500 * weight), "fooled_a_voter");
+      }
+    }
+    void truthItem;
   }
 
   if (scoreEvents.length)
@@ -430,7 +527,6 @@ export async function endMatch(io: IO, room: LiveRoom) {
   await prisma.room.update({ where: { id: room.id }, data: { status: "LOBBY" } });
   room.phase = "MATCH_END";
   await broadcast(io, room);
-  // After a short delay, return to LOBBY so players can start another match.
   setTimeout(async () => {
     room.phase = "LOBBY";
     room.matchId = null;
@@ -441,8 +537,6 @@ export async function endMatch(io: IO, room: LiveRoom) {
 
 export async function hostNextPhase(io: IO, room: LiveRoom, requesterPlayerId: string) {
   if (requesterPlayerId !== room.hostPlayerId) throw new Error("Only the host can advance.");
-  // Host can cut short the current timer (useful for SCORE/REVEAL screens);
-  // core gameplay phases are still server-authoritative.
   if (room.phase === "SUBMIT") return enterRevealPhase(io, room);
   if (room.phase === "REVEAL") return enterVotePhase(io, room);
   if (room.phase === "VOTE") return enterScorePhase(io, room);
@@ -471,7 +565,6 @@ export async function playerSubmit(
     update: { text },
     create: { roundId: room.round.id, playerId, text },
   });
-  // If all core players have submitted, short-circuit into reveal.
   const [corePlayers, subs] = await Promise.all([
     prisma.player.count({
       where: { roomId: room.id, isAudience: false, connected: true },
@@ -493,25 +586,30 @@ export async function playerVote(
 ) {
   if (!room.round || room.phase !== "VOTE")
     throw new Error("Voting isn't open right now.");
-  const [voter, sub] = await Promise.all([
-    prisma.player.findUnique({ where: { id: voterId } }),
-    prisma.submission.findUnique({ where: { id: submissionId } }),
-  ]);
+  const voter = await prisma.player.findUnique({ where: { id: voterId } });
   if (!voter) throw new Error("Voter not found.");
-  if (!sub || sub.roundId !== room.round.id) throw new Error("Invalid submission.");
-  if (sub.playerId === voterId) throw new Error("You can't vote for yourself.");
-
+  const def = getGame(room.round.gameId);
   const weight = voter.isAudience ? DEFAULTS.AUDIENCE_VOTE_WEIGHT : 1;
-  await prisma.vote.upsert({
-    where: { roundId_voterId: { roundId: room.round.id, voterId } },
-    update: { submissionId, weight },
-    create: { roundId: room.round.id, voterId, submissionId, weight },
-  });
+
+  if (submissionId === "__truth__" && def.scoring === "fib") {
+    await prisma.vote.upsert({
+      where: { roundId_voterId: { roundId: room.round.id, voterId } },
+      update: { submissionId: null, forTruth: true, weight },
+      create: { roundId: room.round.id, voterId, submissionId: null, forTruth: true, weight },
+    });
+  } else {
+    const sub = await prisma.submission.findUnique({ where: { id: submissionId } });
+    if (!sub || sub.roundId !== room.round.id) throw new Error("Invalid submission.");
+    if (sub.playerId === voterId) throw new Error("You can't vote for yourself.");
+    await prisma.vote.upsert({
+      where: { roundId_voterId: { roundId: room.round.id, voterId } },
+      update: { submissionId, forTruth: false, weight },
+      create: { roundId: room.round.id, voterId, submissionId, forTruth: false, weight },
+    });
+  }
 
   const [eligible, cast] = await Promise.all([
-    prisma.player.count({
-      where: { roomId: room.id, connected: true },
-    }),
+    prisma.player.count({ where: { roomId: room.id, connected: true } }),
     prisma.vote.count({ where: { roundId: room.round.id } }),
   ]);
   if (cast >= eligible) {
@@ -524,10 +622,11 @@ export async function playerVote(
 export async function updateSettings(
   room: LiveRoom,
   requesterPlayerId: string,
-  patch: { familyMode?: boolean; streamerMode?: boolean }
+  patch: { familyMode?: boolean; streamerMode?: boolean; selectedGameId?: string }
 ) {
   if (requesterPlayerId !== room.hostPlayerId) throw new Error("Only the host can change settings.");
-  const data: { familyMode?: boolean; streamerMode?: boolean } = {};
+  if (room.matchId) throw new Error("Can't change settings mid-match.");
+  const data: { familyMode?: boolean; streamerMode?: boolean; selectedGameId?: string } = {};
   if (typeof patch.familyMode === "boolean") {
     data.familyMode = patch.familyMode;
     room.familyMode = patch.familyMode;
@@ -535,6 +634,12 @@ export async function updateSettings(
   if (typeof patch.streamerMode === "boolean") {
     data.streamerMode = patch.streamerMode;
     room.streamerMode = patch.streamerMode;
+  }
+  if (typeof patch.selectedGameId === "string") {
+    if (!GAMES[patch.selectedGameId]) throw new Error("Unknown game.");
+    data.selectedGameId = patch.selectedGameId;
+    room.selectedGameId = patch.selectedGameId;
+    room.currentGameId = patch.selectedGameId;
   }
   if (Object.keys(data).length)
     await prisma.room.update({ where: { id: room.id }, data });
