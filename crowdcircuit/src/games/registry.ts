@@ -10,9 +10,28 @@
 //   - "fib"   : like Crowd Fibs — voters score for picking the hidden truth,
 //               authors score for fooling other voters into picking their fib.
 
-import type { Rating } from "@prisma/client";
+import type { Rating, SubmissionKind } from "@prisma/client";
 
-export type ScoringMode = "take" | "fib";
+export type ScoringMode = "take" | "fib" | "quiz" | "reaction";
+
+// Game flow decides which phases run:
+//   standard : SUBMIT → REVEAL → VOTE → SCORE (take + fib games)
+//   quiz     : SUBMIT → REVEAL → SCORE      (no voting — truth scores directly)
+//   reaction : SUBMIT → SCORE              (real-time mini-game, no reveal/vote)
+export type GameFlow = "standard" | "quiz" | "reaction";
+
+export interface SeedPrompt {
+  text: string;
+  rating: Rating;
+  tag?: string;
+  // For fib games: the hidden truthful answer.
+  // For quiz games: the correct choice (string matches one entry in `choices`).
+  truth?: string;
+  // For quiz games: the multiple-choice options.
+  choices?: string[];
+  // Optional extra context (hint, image ref, setup line).
+  detail?: string;
+}
 
 export interface GameDefinition {
   id: string;
@@ -20,20 +39,22 @@ export interface GameDefinition {
   tagline: string;
   description: string;
   scoring: ScoringMode;
+  flow: GameFlow;
+  submissionKind: SubmissionKind;
   // Whether the criterion label is hidden during SUBMIT and revealed at VOTE.
-  // Defaults true. For fixed-criterion games (e.g. "Funniest") set false.
   secretCriterion: boolean;
-  // Some games don't use a criterion at all (fib games — voting means "truth").
+  // Some games don't use a criterion at all (fib / quiz / reaction).
   usesCriterion: boolean;
   submissionPlaceholder: string;
   submissionLabel: string;
   voteInstruction: (criterionLabel: string | null) => string;
   revealKicker: string;
-  // Seed data: each game has its own prompt pool. Truth is populated for fib
-  // games; ignored for take games.
-  seedPrompts: { text: string; rating: Rating; tag?: string; truth?: string }[];
+  // Per-game phase timers. Fall back to DEFAULTS when undefined.
+  submitSeconds?: number;
+  revealSeconds?: number;
+  voteSeconds?: number;
+  seedPrompts: SeedPrompt[];
   seedCriteria?: { label: string; rating: Rating; hint?: string }[];
-  // UI accent — picked up by the host/player shells for subtle game identity.
   accent: "ember" | "neon" | "sol" | "orchid";
 }
 
@@ -54,6 +75,8 @@ export const GAMES: Record<string, GameDefinition> = {
     description:
       "Every round drops a silly prompt. Everyone submits a one-line take. The secret criterion is revealed at voting time — funniest, pettiest, most convincing, whatever the round demands.",
     scoring: "take",
+    flow: "standard",
+    submissionKind: "TEXT",
     secretCriterion: true,
     usesCriterion: true,
     submissionPlaceholder: "Drop your take…",
@@ -85,6 +108,8 @@ export const GAMES: Record<string, GameDefinition> = {
     description:
       "You get two wildly unrelated nouns. Pitch a startup that somehow combines them. Everyone votes for who they'd pour fake venture capital into.",
     scoring: "take",
+    flow: "standard",
+    submissionKind: "TEXT",
     secretCriterion: false,
     usesCriterion: true,
     submissionPlaceholder: "Pitch your startup in one sentence…",
@@ -118,6 +143,8 @@ export const GAMES: Record<string, GameDefinition> = {
     description:
       "A very real, very normal personal problem arrives on the host screen. Write the most spectacularly unhelpful advice you can. Good intentions not required.",
     scoring: "take",
+    flow: "standard",
+    submissionKind: "TEXT",
     secretCriterion: false,
     usesCriterion: true,
     submissionPlaceholder: "Write the worst possible advice…",
@@ -151,6 +178,8 @@ export const GAMES: Record<string, GameDefinition> = {
     description:
       "You get a profoundly mundane object. Hype it like you're headlining the world's most optimistic keynote. Crowd votes who almost made them believe.",
     scoring: "take",
+    flow: "standard",
+    submissionKind: "TEXT",
     secretCriterion: false,
     usesCriterion: true,
     submissionPlaceholder: "Hype it up in one sentence…",
@@ -184,6 +213,8 @@ export const GAMES: Record<string, GameDefinition> = {
     description:
       "A scene setup arrives. Submit the single line of dialogue that would completely steal the scene. Voters pick the line they're quoting all night.",
     scoring: "take",
+    flow: "standard",
+    submissionKind: "TEXT",
     secretCriterion: false,
     usesCriterion: true,
     submissionPlaceholder: "The one line that steals the scene…",
@@ -217,6 +248,8 @@ export const GAMES: Record<string, GameDefinition> = {
     description:
       "A weird-but-true trivia question appears. Players write fake answers that *sound* true. The real answer is shuffled in. Everyone tries to pick the truth. Points for detectives. Points for liars who fool the room.",
     scoring: "fib",
+    flow: "standard",
+    submissionKind: "TEXT",
     secretCriterion: false,
     usesCriterion: false,
     submissionPlaceholder: "Write a believable fake answer…",
@@ -295,6 +328,8 @@ export const GAMES: Record<string, GameDefinition> = {
     description:
       "A wildly absurd scene description arrives. Write the caption that belongs under it. Crowd picks the caption that cemented it into the group chat.",
     scoring: "take",
+    flow: "standard",
+    submissionKind: "TEXT",
     secretCriterion: false,
     usesCriterion: true,
     submissionPlaceholder: "Write the caption…",
@@ -328,6 +363,8 @@ export const GAMES: Record<string, GameDefinition> = {
     description:
       "A small inconvenience is announced. Write the villain origin story it definitely caused. Voters pick the one they find tragically sympathetic.",
     scoring: "take",
+    flow: "standard",
+    submissionKind: "TEXT",
     secretCriterion: false,
     usesCriterion: true,
     submissionPlaceholder: "Write the villain origin…",
@@ -361,6 +398,8 @@ export const GAMES: Record<string, GameDefinition> = {
     description:
       "A theme is announced. Write the cursed, chaotic, or strangely correct fortune cookie message it generates. Everyone picks the one they'd post on the fridge.",
     scoring: "take",
+    flow: "standard",
+    submissionKind: "TEXT",
     secretCriterion: false,
     usesCriterion: true,
     submissionPlaceholder: "Your fortune…",
@@ -394,6 +433,8 @@ export const GAMES: Record<string, GameDefinition> = {
     description:
       "A suspicious trait arrives. Write a context that flips it from red flag to green flag. Voters pick the most convincing flip.",
     scoring: "take",
+    flow: "standard",
+    submissionKind: "TEXT",
     secretCriterion: false,
     usesCriterion: true,
     submissionPlaceholder: "Make it make sense…",
@@ -417,6 +458,178 @@ export const GAMES: Record<string, GameDefinition> = {
     ],
     seedCriteria: [
       { label: "Most Convincing Flip", rating: "FAMILY", hint: "You actually bought it." },
+    ],
+  },
+
+  "doodle-dash": {
+    id: "doodle-dash",
+    name: "Doodle Dash",
+    tagline: "Draw the prompt. Nail the vibe. No skill required.",
+    description:
+      "Each round, everyone gets the same prompt and 60 seconds to doodle it on their phone. Drawings are revealed anonymously on the big screen — vote for the one that nails the spirit.",
+    scoring: "take",
+    flow: "standard",
+    submissionKind: "DRAWING",
+    secretCriterion: false,
+    usesCriterion: true,
+    submissionPlaceholder: "Tap to draw…",
+    submissionLabel: "Your drawing",
+    voteInstruction: () => "Which doodle wins the room?",
+    revealKicker: "DOODLES DROPPED",
+    submitSeconds: 60,
+    voteSeconds: 25,
+    accent: "neon",
+    seedPrompts: [
+      { text: "A pirate at the laundromat", rating: "FAMILY", tag: "scene" },
+      { text: "A dinosaur trying to text", rating: "FAMILY", tag: "scene" },
+      { text: "A ghost on their coffee break", rating: "FAMILY", tag: "scene" },
+      { text: "A squirrel with a plan", rating: "FAMILY", tag: "scene" },
+      { text: "An alien's first sandwich", rating: "FAMILY", tag: "scene" },
+      { text: "A wizard stuck in traffic", rating: "FAMILY", tag: "scene" },
+      { text: "A robot doing yoga", rating: "FAMILY", tag: "scene" },
+      { text: "A penguin as a stand-up comedian", rating: "FAMILY", tag: "scene" },
+      { text: "A cowboy in a library", rating: "FAMILY", tag: "scene" },
+      { text: "A chef who only cooks breakfast", rating: "FAMILY", tag: "scene" },
+      { text: "A cat running a yard sale", rating: "FAMILY", tag: "scene" },
+      { text: "A vampire at a pool party", rating: "STANDARD", tag: "scene" },
+    ],
+    seedCriteria: [
+      { label: "Best Doodle", rating: "FAMILY", hint: "Nails the prompt. Extra style." },
+    ],
+  },
+
+  "tap-rally": {
+    id: "tap-rally",
+    name: "Tap Rally",
+    tagline: "No typing. No voting. Just speed.",
+    description:
+      "Targets fly across your phone. Tap them as fast as you can before they escape. The screen is chaos. Highest score on the board wins the round — leaderboard updates live.",
+    scoring: "reaction",
+    flow: "reaction",
+    submissionKind: "TAP",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "Tap the targets!",
+    submissionLabel: "Score",
+    voteInstruction: () => "",
+    revealKicker: "TAP RACE",
+    submitSeconds: 25,
+    accent: "ember",
+    seedPrompts: [
+      { text: "Speed Round", rating: "FAMILY", tag: "pace", detail: "Fast spawns, short lifetimes." },
+      { text: "Steady Aim", rating: "FAMILY", tag: "pace", detail: "Slower targets, bigger combos." },
+      { text: "Chaos Burst", rating: "FAMILY", tag: "pace", detail: "Targets everywhere, all at once." },
+      { text: "Sniper Alley", rating: "FAMILY", tag: "pace", detail: "Small targets, big points." },
+      { text: "Big Flash", rating: "FAMILY", tag: "pace", detail: "Large targets, rapid-fire." },
+      { text: "Grand Rally", rating: "FAMILY", tag: "pace", detail: "Mixed speeds, full chaos." },
+    ],
+  },
+
+  "wager-royale": {
+    id: "wager-royale",
+    name: "Wager Royale",
+    tagline: "Know the answer? Bet on yourself.",
+    description:
+      "A trivia question drops. Pick your answer from four choices. Then set your wager — 100 to 1000 points. Correct wins your wager. Wrong costs it. Bold bets, big leaderboard swings.",
+    scoring: "quiz",
+    flow: "quiz",
+    submissionKind: "QUIZ",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "Pick one…",
+    submissionLabel: "Your answer",
+    voteInstruction: () => "",
+    revealKicker: "THE TRUTH IS",
+    submitSeconds: 25,
+    revealSeconds: 6,
+    accent: "sol",
+    seedPrompts: [
+      {
+        text: "Which of these creatures has three hearts?",
+        choices: ["Octopus", "Giraffe", "Jellyfish", "Flamingo"],
+        truth: "Octopus",
+        rating: "FAMILY",
+        tag: "biology",
+      },
+      {
+        text: "Which planet has the most moons?",
+        choices: ["Jupiter", "Saturn", "Uranus", "Neptune"],
+        truth: "Saturn",
+        rating: "FAMILY",
+        tag: "space",
+        detail: "Counting confirmed natural satellites.",
+      },
+      {
+        text: "A 'murmuration' describes a group of what?",
+        choices: ["Owls", "Starlings", "Bats", "Bees"],
+        truth: "Starlings",
+        rating: "FAMILY",
+        tag: "nature",
+      },
+      {
+        text: "Which instrument has exactly 88 keys?",
+        choices: ["Piano", "Harpsichord", "Accordion", "Organ"],
+        truth: "Piano",
+        rating: "FAMILY",
+        tag: "music",
+      },
+      {
+        text: "Which country has the most time zones?",
+        choices: ["United States", "Russia", "France", "China"],
+        truth: "France",
+        rating: "FAMILY",
+        tag: "geography",
+        detail: "Counting overseas territories.",
+      },
+      {
+        text: "Honey never does what?",
+        choices: ["Crystallize", "Spoil", "Dissolve", "Freeze"],
+        truth: "Spoil",
+        rating: "FAMILY",
+        tag: "food",
+      },
+      {
+        text: "Which common fruit is botanically a berry?",
+        choices: ["Strawberry", "Raspberry", "Banana", "Blackberry"],
+        truth: "Banana",
+        rating: "FAMILY",
+        tag: "food",
+      },
+      {
+        text: "Which language has the most native speakers worldwide?",
+        choices: ["English", "Hindi", "Spanish", "Mandarin Chinese"],
+        truth: "Mandarin Chinese",
+        rating: "FAMILY",
+        tag: "language",
+      },
+      {
+        text: "Which of these is *not* actually an element on the periodic table?",
+        choices: ["Mercury", "Promethium", "Unobtainium", "Einsteinium"],
+        truth: "Unobtainium",
+        rating: "FAMILY",
+        tag: "science",
+      },
+      {
+        text: "In chess, which piece can only move diagonally?",
+        choices: ["Knight", "Rook", "Bishop", "Queen"],
+        truth: "Bishop",
+        rating: "FAMILY",
+        tag: "games",
+      },
+      {
+        text: "The tallest waterfall in the world is in which country?",
+        choices: ["Brazil", "Norway", "Venezuela", "South Africa"],
+        truth: "Venezuela",
+        rating: "FAMILY",
+        tag: "geography",
+      },
+      {
+        text: "What is the only mammal capable of true flight?",
+        choices: ["Flying squirrel", "Sugar glider", "Bat", "Colugo"],
+        truth: "Bat",
+        rating: "FAMILY",
+        tag: "biology",
+      },
     ],
   },
 };

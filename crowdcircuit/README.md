@@ -1,6 +1,6 @@
 # CrowdCircuit
 
-An original browser-based multiplayer party game platform. One host screen, phones as controllers, 3–10 players plus unlimited audience. Ships with **10 original mini-games** that share a common state machine and game registry.
+An original browser-based multiplayer party game platform. One host screen, phones as controllers, 3–10 players plus unlimited audience. Ships with **13 original mini-games** — including text-and-vote games, a phone-drawing game, a real-time tap race, and a trivia-with-wager round — that share a common state machine and game registry.
 
 ## Stack
 
@@ -48,24 +48,29 @@ Open the host view on your TV/laptop by going to `http://localhost:3000`, hit **
 
 ## The game pack
 
-All 10 games share a single state machine (LOBBY → SUBMIT → REVEAL → VOTE → SCORE → MATCH_END) and are described declaratively in `src/games/registry.ts`. The host picks a game from the lobby; the server loads that game's prompt pool at match start.
+Games are described declaratively in `src/games/registry.ts`. Each game picks a **flow** that decides which phases run:
 
-Two scoring modes are supported:
-- **`take`** — authors score from votes received; sharp voters who pick the top take score a bonus.
-- **`fib`** — a hidden truth is mixed in with fake answers; voters score for picking the truth, liars score for fooling other voters.
+- **`standard`** → `SUBMIT → REVEAL → VOTE → SCORE` (text or drawing + vote-to-win).
+- **`quiz`** → `SUBMIT → REVEAL → SCORE` (no voting — the truth scores directly).
+- **`reaction`** → `SUBMIT → SCORE` (real-time mini-game, no reveal/vote).
 
-| Game | Pitch | Scoring |
-| --- | --- | --- |
-| Hot Take Hustle | Silly prompts, sharp takes, **secret** criterion revealed at vote time | take |
-| Pitch Party | Two random concepts — pitch a startup that somehow combines them | take |
-| Bad Advice Booth | A real problem, the worst possible advice wins | take |
-| Hype Machine | A mundane object, hype it to keynote level | take |
-| Scene Stealer | A scene setup, the single line that steals the scene | take |
-| Crowd Fibs | Trivia question with a real answer; write fake answers that sound true — voters must spot the truth | **fib** |
-| Caption Chaos | Absurd scene description, write the caption that wins the internet | take |
-| Villain Origin | A tiny inconvenience, write the villain origin it caused | take |
-| Fortune Forge | A theme, write the cursed fortune cookie | take |
-| Red Flag Rally | A suspicious trait, write context that flips it green | take |
+Submissions can be `TEXT`, `DRAWING`, `QUIZ` (choice + wager), or `TAP` (score payload from a real-time race).
+
+| Game | Pitch | Flow | Input | Scoring |
+| --- | --- | --- | --- | --- |
+| Hot Take Hustle | Silly prompts, sharp takes, **secret** criterion revealed at vote time | standard | text | take |
+| Pitch Party | Two random concepts — pitch a startup that combines them | standard | text | take |
+| Bad Advice Booth | A real problem, the worst possible advice wins | standard | text | take |
+| Hype Machine | A mundane object, hype it to keynote level | standard | text | take |
+| Scene Stealer | A scene setup, the single line that steals the scene | standard | text | take |
+| Crowd Fibs | Trivia question with a real answer; write fake answers — voters spot the truth | standard | text | **fib** |
+| Caption Chaos | Absurd scene, write the caption that wins the internet | standard | text | take |
+| Villain Origin | A tiny inconvenience, write the villain origin it caused | standard | text | take |
+| Fortune Forge | A theme, write the cursed fortune cookie | standard | text | take |
+| Red Flag Rally | A suspicious trait, write context that flips it green | standard | text | take |
+| **Doodle Dash** | Draw the prompt on your phone, vote for the one that nails the vibe | standard | **drawing** | take |
+| **Tap Rally** | Real-time tap-the-target race on your phone — no voting, fastest wins | **reaction** | **tap race** | reaction |
+| **Wager Royale** | Trivia with a confidence wager slider — bold bets, big leaderboard swings | **quiz** | **quiz + wager** | quiz |
 
 ## Hot Take Hustle — how it plays
 
@@ -94,7 +99,10 @@ Two scoring modes are supported:
 - [x] Server-authoritative timers for submit/reveal/vote/score phases
 - [x] Duplicate-vote and duplicate-submission protection (Prisma upserts w/ unique indices)
 - [x] Family mode + banned-word filter + report button
-- [x] Seed pack with 24 prompts and 12 criteria
+- [x] Seed pack across all games (text, drawing prompts, trivia with choices + truths)
+- [x] SVG-based phone drawing surface with color palette + brush sizes + undo/clear
+- [x] Real-time tap race with client-driven target spawning and score clamping
+- [x] Quiz + wager round that skips voting and resolves directly from the truth
 - [x] Accessibility pass (focus rings, `prefers-reduced-motion`, aria-live countdowns)
 
 ## Manual QA checklist

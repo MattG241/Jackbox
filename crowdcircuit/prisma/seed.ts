@@ -19,6 +19,7 @@ async function main() {
     // Seed prompts per game. IDs are deterministic so re-running is idempotent.
     for (const p of game.seedPrompts) {
       const id = `seed-${game.id}-p-${slug(p.text)}`;
+      const choices = p.choices ? JSON.stringify(p.choices) : null;
       await prisma.prompt.upsert({
         where: { id },
         update: {
@@ -27,6 +28,8 @@ async function main() {
           rating: p.rating,
           tag: p.tag,
           truth: p.truth ?? null,
+          choices,
+          detail: p.detail ?? null,
         },
         create: {
           id,
@@ -35,6 +38,8 @@ async function main() {
           rating: p.rating,
           tag: p.tag,
           truth: p.truth ?? null,
+          choices,
+          detail: p.detail ?? null,
         },
       });
       promptCount++;

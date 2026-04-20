@@ -5,6 +5,7 @@ import { useRoomStore } from "@/stores/useRoomStore";
 import { getSocket } from "@/lib/socketClient";
 import { Countdown } from "./Countdown";
 import type { ActionResult, GameCard, RoomSnapshot } from "@/lib/types";
+import { DrawingView, tryParseDrawing } from "./DrawingView";
 
 const accentToClass: Record<GameCard["accent"], { chip: string; heading: string }> = {
   ember: { chip: "!bg-ember/20 !text-ember", heading: "text-ember" },
@@ -251,6 +252,10 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
   if (!snapshot?.round) return null;
   const r = snapshot.round;
   const accent = game ? accentToClass[game.accent] : null;
+  const isTap = r.flow === "reaction";
+  const isQuiz = r.flow === "quiz";
+  const isDrawing = r.submissionKind === "DRAWING";
+
   return (
     <section className="cc-card mx-auto w-full max-w-4xl p-10 text-center">
       <div className="flex items-center justify-center gap-3 text-sm text-mist/60">
@@ -264,18 +269,44 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
       <h2 className={`mt-4 text-3xl font-semibold sm:text-5xl ${accent?.heading ?? ""}`}>
         {r.prompt}
       </h2>
+      {r.promptDetail && (
+        <p className="mt-2 text-lg text-mist/70">{r.promptDetail}</p>
+      )}
       <p className="mt-4 text-mist/60">
-        {game?.scoring === "fib"
+        {isTap
+          ? "Phones are the race track. Tap everything that pops."
+          : isQuiz
+          ? "Pick your answer and set your wager."
+          : isDrawing
+          ? "Draw on your phone. Pixel quality not required."
+          : game?.scoring === "fib"
           ? "Write a fake answer that sounds true. The real one is in here too."
           : r.criterionHidden
           ? "Take out your phones. The criterion drops at voting time."
           : `Write the ${game?.name.toLowerCase()}.`}
       </p>
+      {isQuiz && r.choices && (
+        <ul className="mx-auto mt-6 grid max-w-2xl gap-2 sm:grid-cols-2">
+          {r.choices.map((c, i) => (
+            <li
+              key={c}
+              className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-left text-lg"
+            >
+              <span className="mr-2 font-mono text-sol">
+                {String.fromCharCode(65 + i)}.
+              </span>
+              {c}
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="mt-8 flex flex-wrap justify-center gap-2">
         {snapshot.players.map((p) => (
           <span
             key={p.id}
-            className={`cc-chip ${r.submittedPlayerIds.includes(p.id) ? "!bg-neon/20 !text-neon" : ""}`}
+            className={`cc-chip ${
+              r.submittedPlayerIds.includes(p.id) ? "!bg-neon/20 !text-neon" : ""
+            }`}
           >
             {p.displayName}
             {r.submittedPlayerIds.includes(p.id) ? " ✓" : " …"}
@@ -290,24 +321,75 @@ function RevealPanel({ game }: { game: GameCard | null }) {
   const { snapshot } = useRoomStore();
   if (!snapshot?.round) return null;
   const r = snapshot.round;
+  const isQuiz = r.flow === "quiz";
+  const isDrawing = r.submissionKind === "DRAWING";
   return (
     <section className="cc-card mx-auto w-full max-w-5xl p-10">
       <div className="text-center text-sm text-mist/60">
         {game?.name} • Round {r.number}
       </div>
       <h2 className="mt-2 text-center text-2xl font-semibold sm:text-4xl">{r.prompt}</h2>
-      <div className="mt-6 grid gap-3 sm:grid-cols-2">
-        {r.reveal.map((item, i) => (
-          <div
-            key={item.submissionId ?? `truth-${i}`}
-            className="cc-card border-white/10 p-5 animate-floaty"
-            style={{ animationDelay: `${i * 150}ms` }}
-          >
-            <div className="text-xs text-mist/50">Take {i + 1}</div>
-            <div className="mt-1 text-lg">{item.text}</div>
-          </div>
-        ))}
-      </div>
+      {r.promptDetail && (
+        <p className="mt-2 text-center text-mist/60">{r.promptDetail}</p>
+      )}
+      {isQuiz ? (
+        <div className="mt-6">
+          {r.truth ? (
+            <div className="cc-card mx-auto max-w-xl border-sol/40 bg-sol/10 p-6 text-center">
+              <div className="text-xs uppercase tracking-widest text-sol">
+                The truth is
+              </div>
+              <div className="mt-2 text-2xl font-semibold text-sol">{r.truth}</div>
+            </div>
+          ) : null}
+          {r.choices && (
+            <ul className="mx-auto mt-6 grid max-w-2xl gap-2 sm:grid-cols-2">
+              {r.choices.map((c, i) => {
+                const isTruth = r.truth === c;
+                return (
+                  <li
+                    key={c}
+                    className={`rounded-xl border px-4 py-3 text-left text-lg transition ${
+                      isTruth
+                        ? "border-sol bg-sol/20 text-sol"
+                        : "border-white/10 bg-white/5 text-mist/80"
+                    }`}
+                  >
+                    <span className="mr-2 font-mono">
+                      {String.fromCharCode(65 + i)}.
+                    </span>
+                    {c}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ) : (
+        <div className="mt-6 grid gap-3 sm:grid-cols-2">
+          {r.reveal.map((item, i) => {
+            const drawing = isDrawing && !item.isTruth ? tryParseDrawing(item.text) : null;
+            return (
+              <div
+                key={item.submissionId ?? `truth-${i}`}
+                className="cc-card border-white/10 p-5 animate-floaty"
+                style={{ animationDelay: `${i * 150}ms` }}
+              >
+                <div className="text-xs text-mist/50">
+                  {isDrawing ? `Doodle ${i + 1}` : `Entry ${i + 1}`}
+                </div>
+                {drawing ? (
+                  <div className="mt-2">
+                    <DrawingView drawing={drawing} />
+                  </div>
+                ) : (
+                  <div className="mt-1 text-lg">{item.text}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -336,12 +418,26 @@ function VotePanel({ game }: { game: GameCard | null }) {
         </div>
       ) : null}
       <div className="mt-6 grid gap-3 sm:grid-cols-2">
-        {r.reveal.map((item, i) => (
-          <div key={item.submissionId ?? `truth-${i}`} className="rounded-2xl bg-white/5 p-5">
-            <div className="text-xs text-mist/50">Take {i + 1}</div>
-            <div className="mt-1 text-lg">{item.text}</div>
-          </div>
-        ))}
+        {r.reveal.map((item, i) => {
+          const drawing =
+            r.submissionKind === "DRAWING" && !item.isTruth
+              ? tryParseDrawing(item.text)
+              : null;
+          return (
+            <div key={item.submissionId ?? `truth-${i}`} className="rounded-2xl bg-white/5 p-5">
+              <div className="text-xs text-mist/50">
+                {drawing ? `Doodle ${i + 1}` : `Entry ${i + 1}`}
+              </div>
+              {drawing ? (
+                <div className="mt-2">
+                  <DrawingView drawing={drawing} />
+                </div>
+              ) : (
+                <div className="mt-1 text-lg">{item.text}</div>
+              )}
+            </div>
+          );
+        })}
       </div>
       <p className="mt-4 text-sm text-mist/60">
         {r.votedVoterIds.length} vote{r.votedVoterIds.length === 1 ? "" : "s"} cast.
@@ -353,13 +449,21 @@ function VotePanel({ game }: { game: GameCard | null }) {
 function ScorePanel() {
   const { snapshot } = useRoomStore();
   if (!snapshot?.round) return null;
-  const summary = snapshot.round.roundSummary ?? [];
+  const r = snapshot.round;
+  const summary = r.roundSummary ?? [];
   const leaderboard = [...snapshot.players].sort((a, b) => b.score - a.score);
-  const truthItem = snapshot.round.reveal.find((r) => r.isTruth);
+  const truthItem = r.reveal.find((item) => item.isTruth);
+  const quizTruth = r.flow === "quiz" ? r.truth : null;
   return (
     <section className="mx-auto grid w-full max-w-5xl gap-6 md:grid-cols-2">
       <div className="cc-card p-6">
         <h3 className="text-lg font-semibold">This round</h3>
+        {quizTruth && (
+          <div className="mt-3 rounded-xl bg-sol/15 p-3 text-sm">
+            <span className="text-xs uppercase tracking-widest text-sol">Answer</span>
+            <div className="mt-1 text-base font-semibold text-sol">{quizTruth}</div>
+          </div>
+        )}
         {truthItem && (
           <div className="mt-3 rounded-xl bg-neon/10 p-3 text-sm">
             <span className="text-xs uppercase tracking-widest text-neon">Truth</span>

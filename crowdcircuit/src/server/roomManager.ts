@@ -11,6 +11,7 @@ import type {
 } from "@/lib/types";
 import { shuffle } from "@/lib/utils";
 import { GAMES, GAME_LIST, getGame } from "@/games/registry";
+import { clampDrawing } from "@/lib/drawing";
 
 // Constants — mirror the MVP defaults spelled out in the spec.
 export const DEFAULTS = {
@@ -45,10 +46,14 @@ interface LiveRoom {
     gameId: string;
     promptText: string;
     promptTruth: string | null;
+    promptDetail: string | null;
+    choices: string[] | null;
     criterionLabel: string | null;
     criterionHidden: boolean;
     phaseEndsAt: number | null;
     reveal: RevealItem[];
+    // For QUIZ phase reveal: whether the truth has been unveiled yet.
+    truthRevealed: boolean;
     roundSummary: { playerId: string; name: string; delta: number }[] | null;
   } | null;
   phaseTimer: NodeJS.Timeout | null;
@@ -102,6 +107,8 @@ function toGameCards(): GameCard[] {
     tagline: g.tagline,
     description: g.description,
     scoring: g.scoring,
+    flow: g.flow,
+    submissionKind: g.submissionKind,
     usesCriterion: g.usesCriterion,
     accent: g.accent,
   }));
@@ -176,7 +183,16 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
           number: room.round.number,
           total: room.round.total,
           gameId: room.round.gameId,
+          flow: getGame(room.round.gameId).flow,
+          submissionKind: getGame(room.round.gameId).submissionKind,
           prompt: room.round.promptText,
+          promptDetail: room.round.promptDetail,
+          choices: room.round.choices,
+          // Truth is only exposed to clients at REVEAL (for quiz) and SCORE.
+          truth:
+            room.round.truthRevealed || room.phase === "SCORE"
+              ? room.round.promptTruth
+              : null,
           criterionLabel: room.round.criterionHidden ? null : room.round.criterionLabel,
           criterionHidden: room.round.criterionHidden,
           phaseEndsAt: room.round.phaseEndsAt,
@@ -330,6 +346,7 @@ async function advanceToNextRound(io: IO, room: LiveRoom) {
     });
   }
 
+  const submitSeconds = def.submitSeconds ?? DEFAULTS.SUBMIT_SECONDS;
   const round = await prisma.round.create({
     data: {
       matchId: match.id,
@@ -337,13 +354,23 @@ async function advanceToNextRound(io: IO, room: LiveRoom) {
       promptId: prompt.id,
       criterionId: effectiveCriterion.id,
       phase: "SUBMIT",
-      phaseEndsAt: new Date(Date.now() + DEFAULTS.SUBMIT_SECONDS * 1000),
+      phaseEndsAt: new Date(Date.now() + submitSeconds * 1000),
     },
   });
   await prisma.match.update({
     where: { id: match.id },
     data: { currentRound: nextRoundNumber },
   });
+
+  let choices: string[] | null = null;
+  if (prompt.choices) {
+    try {
+      const parsed = JSON.parse(prompt.choices);
+      if (Array.isArray(parsed)) choices = parsed.map((c) => String(c));
+    } catch {
+      choices = null;
+    }
+  }
 
   room.phase = "SUBMIT";
   room.round = {
@@ -353,13 +380,16 @@ async function advanceToNextRound(io: IO, room: LiveRoom) {
     gameId: def.id,
     promptText: prompt.text,
     promptTruth: prompt.truth ?? null,
+    promptDetail: prompt.detail ?? null,
+    choices,
     criterionLabel: def.usesCriterion ? effectiveCriterion.label : null,
     criterionHidden: def.usesCriterion && def.secretCriterion,
     phaseEndsAt: round.phaseEndsAt!.getTime(),
     reveal: [],
+    truthRevealed: false,
     roundSummary: null,
   };
-  schedulePhaseEnd(io, room, DEFAULTS.SUBMIT_SECONDS, () => enterRevealPhase(io, room));
+  schedulePhaseEnd(io, room, submitSeconds, () => enterRevealPhase(io, room));
   await broadcast(io, room);
 }
 
@@ -371,6 +401,11 @@ function schedulePhaseEnd(io: IO, room: LiveRoom, seconds: number, next: () => v
 async function enterRevealPhase(io: IO, room: LiveRoom) {
   if (!room.round) return;
   const def = getGame(room.round.gameId);
+
+  // Reaction games skip REVEAL + VOTE entirely — score directly from submissions.
+  if (def.flow === "reaction") {
+    return enterScorePhase(io, room);
+  }
 
   const submissions = await prisma.submission.findMany({
     where: { roundId: room.round.id },
@@ -395,27 +430,37 @@ async function enterRevealPhase(io: IO, room: LiveRoom) {
   }
   const reveal = shuffle(items);
 
+  const revealSeconds = def.revealSeconds ?? DEFAULTS.REVEAL_SECONDS;
   room.phase = "REVEAL";
-  room.round.phaseEndsAt = Date.now() + DEFAULTS.REVEAL_SECONDS * 1000;
+  room.round.phaseEndsAt = Date.now() + revealSeconds * 1000;
   room.round.reveal = reveal;
+  // Quiz games unveil the truth during REVEAL (no separate vote phase).
+  room.round.truthRevealed = def.flow === "quiz";
   await prisma.round.update({
     where: { id: room.round.id },
     data: { phase: "REVEAL", phaseEndsAt: new Date(room.round.phaseEndsAt) },
   });
-  schedulePhaseEnd(io, room, DEFAULTS.REVEAL_SECONDS, () => enterVotePhase(io, room));
+  // Quiz skips VOTE and goes straight to SCORE.
+  const next =
+    def.flow === "quiz"
+      ? () => enterScorePhase(io, room)
+      : () => enterVotePhase(io, room);
+  schedulePhaseEnd(io, room, revealSeconds, next);
   await broadcast(io, room);
 }
 
 async function enterVotePhase(io: IO, room: LiveRoom) {
   if (!room.round) return;
+  const def = getGame(room.round.gameId);
+  const voteSeconds = def.voteSeconds ?? DEFAULTS.VOTE_SECONDS;
   room.phase = "VOTE";
   room.round.criterionHidden = false; // secret criterion revealed here (if any).
-  room.round.phaseEndsAt = Date.now() + DEFAULTS.VOTE_SECONDS * 1000;
+  room.round.phaseEndsAt = Date.now() + voteSeconds * 1000;
   await prisma.round.update({
     where: { id: room.round.id },
     data: { phase: "VOTE", phaseEndsAt: new Date(room.round.phaseEndsAt) },
   });
-  schedulePhaseEnd(io, room, DEFAULTS.VOTE_SECONDS, () => enterScorePhase(io, room));
+  schedulePhaseEnd(io, room, voteSeconds, () => enterScorePhase(io, room));
   await broadcast(io, room);
 }
 
@@ -437,7 +482,63 @@ async function enterScorePhase(io: IO, room: LiveRoom) {
     scoreEvents.push({ roundId: room.round!.id, playerId, points: pts, reason });
   };
 
-  if (def.scoring === "take") {
+  if (def.scoring === "quiz") {
+    // Quiz: correct choice wins the wager; wrong loses it (floored at 0 delta).
+    const truth = room.round.promptTruth;
+    for (const s of submissions) {
+      let choice: string | null = null;
+      let wager = 100;
+      try {
+        const parsed = JSON.parse(s.text);
+        if (parsed && typeof parsed === "object") {
+          choice = typeof parsed.choice === "string" ? parsed.choice : null;
+          if (typeof parsed.wager === "number")
+            wager = Math.max(100, Math.min(1000, Math.round(parsed.wager)));
+        }
+      } catch {
+        // Malformed submission → no choice, minimum wager.
+      }
+      add(s.playerId, 50, "quiz_participation");
+      if (truth && choice === truth) {
+        add(s.playerId, wager, "quiz_correct");
+      }
+      // Wrong answers don't deduct (positive-sum scoring keeps it breezy);
+      // the upside of a big wager is what makes it interesting.
+    }
+  } else if (def.scoring === "reaction") {
+    // Tap Rally: parse each player's TAP payload and award proportional points.
+    // The top scorer gets a round bonus. Audience players (if any submitted)
+    // don't affect ranking.
+    interface TapPayload {
+      playerId: string;
+      score: number;
+      hits: number;
+    }
+    const parsed: TapPayload[] = [];
+    for (const s of submissions) {
+      try {
+        const p = JSON.parse(s.text);
+        const score = Math.max(0, Math.min(99999, Math.round(Number(p?.score) || 0)));
+        const hits = Math.max(0, Math.min(9999, Math.round(Number(p?.hits) || 0)));
+        parsed.push({ playerId: s.playerId, score, hits });
+      } catch {
+        parsed.push({ playerId: s.playerId, score: 0, hits: 0 });
+      }
+      add(s.playerId, 50, "reaction_participation");
+    }
+    for (const p of parsed) {
+      // Scale raw tap score into points — ~10 points per hit (score is already
+      // weighted on the client by speed bonus).
+      add(p.playerId, p.score, "tap_score");
+    }
+    const ranked = [...parsed].sort((a, b) => b.score - a.score);
+    if (ranked.length && ranked[0].score > 0) {
+      add(ranked[0].playerId, 500, "tap_top");
+      if (ranked.length > 1 && ranked[1].score > 0) {
+        add(ranked[1].playerId, 250, "tap_second");
+      }
+    }
+  } else if (def.scoring === "take") {
     // Participation + votes-received + top-take + sharp-voter bonus.
     const tally = new Map<string, number>();
     const voterCountBySubmission = new Map<string, number>();
@@ -537,8 +638,15 @@ export async function endMatch(io: IO, room: LiveRoom) {
 
 export async function hostNextPhase(io: IO, room: LiveRoom, requesterPlayerId: string) {
   if (requesterPlayerId !== room.hostPlayerId) throw new Error("Only the host can advance.");
+  const def = room.round ? getGame(room.round.gameId) : null;
   if (room.phase === "SUBMIT") return enterRevealPhase(io, room);
-  if (room.phase === "REVEAL") return enterVotePhase(io, room);
+  if (room.phase === "REVEAL") {
+    // Quiz skips VOTE; reaction never reaches REVEAL but guard anyway.
+    if (def?.flow === "quiz" || def?.flow === "reaction") {
+      return enterScorePhase(io, room);
+    }
+    return enterVotePhase(io, room);
+  }
   if (room.phase === "VOTE") return enterScorePhase(io, room);
   if (room.phase === "SCORE") return advanceToNextRound(io, room);
   if (room.phase === "MATCH_END") {
@@ -559,12 +667,65 @@ export async function playerSubmit(
     throw new Error("Not accepting submissions right now.");
   const player = await prisma.player.findUnique({ where: { id: playerId } });
   if (!player) throw new Error("Player not found.");
-  if (player.isAudience) throw new Error("Audience members can't submit takes.");
+  if (player.isAudience) throw new Error("Audience members can't submit answers.");
+  const def = getGame(room.round.gameId);
+
+  // Normalize the submission per kind. `text` arrives pre-moderated for TEXT;
+  // for other kinds the client sends JSON which we validate + re-serialize.
+  let storedText = text;
+  if (def.submissionKind === "DRAWING") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Drawing payload was malformed.");
+    }
+    if (!parsed || typeof parsed !== "object")
+      throw new Error("Drawing payload was malformed.");
+    const clamped = clampDrawing(parsed as Parameters<typeof clampDrawing>[0]);
+    if (!clamped.s.length) throw new Error("Your canvas is empty — draw something first!");
+    storedText = JSON.stringify(clamped);
+  } else if (def.submissionKind === "QUIZ") {
+    let parsed: { choice?: unknown; wager?: unknown };
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Quiz submission was malformed.");
+    }
+    const choice = typeof parsed.choice === "string" ? parsed.choice : null;
+    if (!choice) throw new Error("Pick one of the choices.");
+    if (room.round.choices && !room.round.choices.includes(choice))
+      throw new Error("That choice isn't on the board.");
+    const wager = Math.max(
+      100,
+      Math.min(1000, Math.round(Number(parsed.wager) || 100))
+    );
+    storedText = JSON.stringify({ choice, wager });
+  } else if (def.submissionKind === "TAP") {
+    let parsed: { score?: unknown; hits?: unknown; misses?: unknown; fastestMs?: unknown };
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Tap race payload was malformed.");
+    }
+    const score = Math.max(0, Math.min(99999, Math.round(Number(parsed.score) || 0)));
+    const hits = Math.max(0, Math.min(9999, Math.round(Number(parsed.hits) || 0)));
+    const misses = Math.max(0, Math.min(9999, Math.round(Number(parsed.misses) || 0)));
+    const fastestMs = Math.max(0, Math.min(60000, Math.round(Number(parsed.fastestMs) || 0)));
+    storedText = JSON.stringify({ score, hits, misses, fastestMs });
+  }
+
   await prisma.submission.upsert({
     where: { roundId_playerId: { roundId: room.round.id, playerId } },
-    update: { text },
-    create: { roundId: room.round.id, playerId, text },
+    update: { text: storedText, kind: def.submissionKind },
+    create: {
+      roundId: room.round.id,
+      playerId,
+      text: storedText,
+      kind: def.submissionKind,
+    },
   });
+
   const [corePlayers, subs] = await Promise.all([
     prisma.player.count({
       where: { roomId: room.id, isAudience: false, connected: true },
@@ -586,9 +747,11 @@ export async function playerVote(
 ) {
   if (!room.round || room.phase !== "VOTE")
     throw new Error("Voting isn't open right now.");
+  const def = getGame(room.round.gameId);
+  if (def.flow !== "standard")
+    throw new Error("This game doesn't use voting.");
   const voter = await prisma.player.findUnique({ where: { id: voterId } });
   if (!voter) throw new Error("Voter not found.");
-  const def = getGame(room.round.gameId);
   const weight = voter.isAudience ? DEFAULTS.AUDIENCE_VOTE_WEIGHT : 1;
 
   if (submissionId === "__truth__" && def.scoring === "fib") {

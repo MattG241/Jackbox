@@ -22,12 +22,17 @@ export interface RevealItem {
   isTruth: boolean;
 }
 
+export type GameFlow = "standard" | "quiz" | "reaction";
+export type GameSubmissionKind = "TEXT" | "DRAWING" | "QUIZ" | "TAP";
+
 export interface GameCard {
   id: string;
   name: string;
   tagline: string;
   description: string;
-  scoring: "take" | "fib";
+  scoring: "take" | "fib" | "quiz" | "reaction";
+  flow: GameFlow;
+  submissionKind: GameSubmissionKind;
   usesCriterion: boolean;
   accent: "ember" | "neon" | "sol" | "orchid";
 }
@@ -48,7 +53,15 @@ export interface RoomSnapshot {
     number: number;
     total: number;
     gameId: string;
+    flow: GameFlow;
+    submissionKind: GameSubmissionKind;
     prompt: string | null;
+    // Optional hint / setup text shown alongside the prompt.
+    promptDetail: string | null;
+    // For QUIZ flow: multiple-choice options (plain strings).
+    choices: string[] | null;
+    // For QUIZ flow during SCORE: the correct choice. Null in earlier phases.
+    truth: string | null;
     criterionLabel: string | null;
     // criterion is hidden during SUBMIT (secret criterion) and revealed at VOTE.
     criterionHidden: boolean;

@@ -21,6 +21,7 @@ import {
   endMatch,
 } from "./roomManager";
 import { moderateText } from "@/lib/moderation";
+import { getGame } from "@/games/registry";
 
 type IO = IOServer<ClientToServerEvents, ServerToClientEvents>;
 
@@ -127,9 +128,17 @@ export function attachSocketServer(httpServer: HttpServer): IO {
       wrap(async () => {
         const room = await ensureRoomLoaded(ctx.roomCode);
         if (!room) throw new Error("Room not found.");
-        const moderation = moderateText(text, { familyMode: room.familyMode, maxLen: 140 });
-        if (!moderation.ok) throw new Error(moderation.reason);
-        await playerSubmit(io, room, ctx.playerId, moderation.cleaned);
+        // Moderation only applies to TEXT submissions. DRAWING/QUIZ/TAP are
+        // structured payloads the server validates inside playerSubmit.
+        const gameId = room.round?.gameId ?? room.currentGameId;
+        const kind = getGame(gameId).submissionKind;
+        let payload = text;
+        if (kind === "TEXT") {
+          const moderation = moderateText(text, { familyMode: room.familyMode, maxLen: 140 });
+          if (!moderation.ok) throw new Error(moderation.reason);
+          payload = moderation.cleaned;
+        }
+        await playerSubmit(io, room, ctx.playerId, payload);
       }, cb);
     });
 

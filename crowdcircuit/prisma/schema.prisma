@@ -40,6 +40,13 @@ enum FlagReason {
   OTHER
 }
 
+enum SubmissionKind {
+  TEXT
+  DRAWING
+  QUIZ
+  TAP
+}
+
 model Room {
   id              String     @id @default(cuid())
   code            String     @unique
@@ -120,6 +127,10 @@ model Prompt {
   gameId    String   @default("hot-take-hustle")
   text      String
   truth     String?
+  // For quiz games: JSON array of choice strings (shown alongside truth).
+  choices   String?
+  // Optional hint/image or setup shown with the prompt.
+  detail    String?
   rating    Rating   @default(STANDARD)
   tag       String?
   createdAt DateTime @default(now())
@@ -145,11 +156,15 @@ model Criterion {
 }
 
 model Submission {
-  id        String   @id @default(cuid())
+  id        String         @id @default(cuid())
   roundId   String
   playerId  String
+  kind      SubmissionKind @default(TEXT)
+  // TEXT: the raw answer. DRAWING: JSON serialized Drawing.
+  // QUIZ: JSON { choiceIndex: number, wager: number }.
+  // TAP: JSON { score: number, hits: number, misses: number, fastestMs: number }.
   text      String
-  createdAt DateTime @default(now())
+  createdAt DateTime       @default(now())
 
   round  Round  @relation(fields: [roundId], references: [id], onDelete: Cascade)
   player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
