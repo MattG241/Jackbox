@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html,
+  body {
+    @apply min-h-full bg-ink text-mist font-body antialiased;
+    background:
+      radial-gradient(1200px 800px at 10% 0%, rgba(176, 128, 255, 0.18), transparent 60%),
+      radial-gradient(1000px 700px at 90% 100%, rgba(124, 248, 208, 0.12), transparent 60%),
+      #0b0a1a;
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-display tracking-tight;
+  }
+  button:focus-visible,
+  [role="button"]:focus-visible,
+  input:focus-visible,
+  a:focus-visible {
+    outline: 2px solid #7cf8d0;
+    outline-offset: 2px;
+    border-radius: 8px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0ms !important;
+      transition-duration: 0ms !important;
+    }
+  }
+}
+
+@layer components {
+  .cc-card {
+    @apply rounded-2xl bg-slate1/80 border border-white/5 shadow-halo backdrop-blur-sm;
+  }
+  .cc-chip {
+    @apply inline-flex items-center gap-1.5 rounded-full bg-white/5 px-2.5 py-1 text-xs font-medium text-mist/80 border border-white/10;
+  }
+  .cc-btn {
+    @apply inline-flex items-center justify-center rounded-xl px-5 py-3 font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .cc-btn-primary {
+    @apply cc-btn bg-ember text-white hover:brightness-110 active:scale-[0.98] shadow-[0_0_24px_rgba(255,79,123,0.35)];
+  }
+  .cc-btn-ghost {
+    @apply cc-btn bg-white/5 text-mist hover:bg-white/10 border border-white/10;
+  }
+  .cc-input {
+    @apply w-full rounded-xl bg-slate2 border border-white/10 px-4 py-3 text-mist placeholder:text-mist/40 focus:border-neon focus:outline-none;
+  }
+  .cc-code {
+    @apply font-display text-5xl sm:text-7xl tracking-[0.2em] text-neon drop-shadow-[0_0_24px_rgba(124,248,208,0.55)];
+  }
+}

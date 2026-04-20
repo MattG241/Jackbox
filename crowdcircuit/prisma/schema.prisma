@@ -1,0 +1,193 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Rating {
+  FAMILY
+  STANDARD
+}
+
+enum RoomStatus {
+  LOBBY
+  IN_MATCH
+  ENDED
+}
+
+enum MatchStatus {
+  PENDING
+  RUNNING
+  FINISHED
+}
+
+enum RoundPhase {
+  IDLE
+  SUBMIT
+  REVEAL
+  VOTE
+  SCORE
+  DONE
+}
+
+enum FlagReason {
+  PROFANITY
+  HARASSMENT
+  OFFTOPIC
+  OTHER
+}
+
+model Room {
+  id           String     @id @default(cuid())
+  code         String     @unique
+  status       RoomStatus @default(LOBBY)
+  hostPlayerId String?    @unique
+  familyMode   Boolean    @default(false)
+  streamerMode Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  players Player[]
+  matches Match[]
+  flags   ModerationFlag[]
+
+  @@index([status])
+}
+
+model Player {
+  id            String   @id @default(cuid())
+  roomId        String
+  displayName   String
+  sessionToken  String   @unique
+  isAudience    Boolean  @default(false)
+  connected     Boolean  @default(true)
+  joinedAt      DateTime @default(now())
+  lastSeenAt    DateTime @default(now())
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  submissions Submission[]
+  votes       Vote[]
+  scoreEvents ScoreEvent[]
+
+  @@index([roomId])
+  @@unique([roomId, displayName])
+}
+
+model Match {
+  id            String      @id @default(cuid())
+  roomId        String
+  status        MatchStatus @default(PENDING)
+  totalRounds   Int         @default(5)
+  currentRound  Int         @default(0)
+  startedAt     DateTime?
+  endedAt       DateTime?
+
+  room   Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  rounds Round[]
+
+  @@index([roomId])
+}
+
+model Round {
+  id           String     @id @default(cuid())
+  matchId      String
+  roundNumber  Int
+  phase        RoundPhase @default(IDLE)
+  promptId     String
+  criterionId  String
+  phaseEndsAt  DateTime?
+  createdAt    DateTime   @default(now())
+
+  match       Match        @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  prompt      Prompt       @relation(fields: [promptId], references: [id])
+  criterion   Criterion    @relation(fields: [criterionId], references: [id])
+  submissions Submission[]
+  votes       Vote[]
+  scoreEvents ScoreEvent[]
+
+  @@unique([matchId, roundNumber])
+}
+
+model Prompt {
+  id        String   @id @default(cuid())
+  text      String
+  rating    Rating   @default(STANDARD)
+  tag       String?
+  createdAt DateTime @default(now())
+
+  rounds Round[]
+
+  @@index([rating])
+}
+
+model Criterion {
+  id        String   @id @default(cuid())
+  label     String
+  rating    Rating   @default(STANDARD)
+  hint      String?
+  createdAt DateTime @default(now())
+
+  rounds Round[]
+
+  @@index([rating])
+}
+
+model Submission {
+  id        String   @id @default(cuid())
+  roundId   String
+  playerId  String
+  text      String
+  createdAt DateTime @default(now())
+
+  round  Round  @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  votes  Vote[]
+
+  @@unique([roundId, playerId])
+  @@index([roundId])
+}
+
+model Vote {
+  id           String   @id @default(cuid())
+  roundId      String
+  voterId      String
+  submissionId String
+  weight       Float    @default(1.0)
+  createdAt    DateTime @default(now())
+
+  round      Round      @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  voter      Player     @relation(fields: [voterId], references: [id], onDelete: Cascade)
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, voterId])
+  @@index([submissionId])
+}
+
+model ScoreEvent {
+  id        String   @id @default(cuid())
+  roundId   String
+  playerId  String
+  points    Int
+  reason    String
+  createdAt DateTime @default(now())
+
+  round  Round  @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@index([playerId])
+}
+
+model ModerationFlag {
+  id        String     @id @default(cuid())
+  roomId    String?
+  content   String
+  reason    FlagReason @default(OTHER)
+  notes     String?
+  createdAt DateTime   @default(now())
+
+  room Room? @relation(fields: [roomId], references: [id], onDelete: SetNull)
+}
