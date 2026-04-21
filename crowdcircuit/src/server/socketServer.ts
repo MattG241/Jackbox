@@ -10,6 +10,7 @@ import {
   bindSocketContext,
   broadcast,
   canControl,
+  claimHost,
   ensureRoomLoaded,
   getSocketContext,
   hostNextPhase,
@@ -144,6 +145,16 @@ export function attachSocketServer(httpServer: HttpServer): IO {
         if (!room) throw new Error("Room not found.");
         await updateSettings(room, ctx.playerId, patch);
         await broadcast(io, room);
+      }, cb);
+    });
+
+    socket.on("host:claim", (cb) => {
+      const ctx = getSocketContext(socket.id);
+      if (!ctx) return cb({ ok: false, reason: "Not in a room." });
+      wrap(async () => {
+        const room = await ensureRoomLoaded(ctx.roomCode);
+        if (!room) throw new Error("Room not found.");
+        await claimHost(io, room, ctx.playerId);
       }, cb);
     });
 

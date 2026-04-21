@@ -197,6 +197,10 @@ export interface ClientToServerEvents {
   ) => void;
   "host:startMatch": (cb: (res: ActionResult) => void) => void;
   "host:nextPhase": (cb: (res: ActionResult) => void) => void;
+  // Lobby-only safety valve: any non-audience player can claim host when
+  // the current host has no active socket (server enforces this). Handles
+  // stale rooms and host drop-outs.
+  "host:claim": (cb: (res: ActionResult) => void) => void;
   "host:updateSettings": (
     p: { familyMode?: boolean; streamerMode?: boolean; selectedGameId?: string },
     cb: (res: ActionResult) => void

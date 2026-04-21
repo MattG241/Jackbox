@@ -3,7 +3,11 @@ import { customAlphabet } from "nanoid";
 import { prisma } from "@/lib/db";
 import { isDisplayNameOk } from "@/lib/moderation";
 import { joinRoomSchema } from "@/lib/validation";
-import { DEFAULTS, getRoomByCode } from "@/server/roomManager";
+import {
+  DEFAULTS,
+  getRoomByCode,
+  hasActiveSocketForPlayer,
+} from "@/server/roomManager";
 
 const tokenGen = customAlphabet(
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
@@ -94,21 +98,40 @@ export async function POST(
     },
   });
 
-  // First-scanner-is-host: if the room has no host yet and this player is
-  // playing (not audience), promote them to host. They still play normally
-  // — host just means "can start the match and tweak settings." The TV is
-  // display-only and is never host.
+  // First-scanner-is-host: promote the new joiner if the room has no host
+  // OR the current host is a ghost (row deleted / never had a socket bound
+  // / no longer connected). This handles three realistic cases:
+  //   * Brand new rooms (hostPlayerId = null).
+  //   * Rooms created under an older build that set the "TV" as host —
+  //     that player record has no active socket so the room is
+  //     effectively hostless today.
+  //   * Host left and never came back. The next player to scan takes the
+  //     role.
   let promotedToHost = false;
-  if (!room.hostPlayerId && !asAudience) {
-    await prisma.room.update({
-      where: { id: room.id },
-      data: { hostPlayerId: player.id },
-    });
-    // Mirror the change into the in-memory LiveRoom if it's already loaded,
-    // so the socket layer sees the new host immediately on auth:resume.
-    const live = getRoomByCode(code);
-    if (live) live.hostPlayerId = player.id;
-    promotedToHost = true;
+  if (!asAudience) {
+    let needsHost = !room.hostPlayerId;
+    if (!needsHost && room.hostPlayerId) {
+      const existing = await prisma.player.findUnique({
+        where: { id: room.hostPlayerId },
+        select: { id: true },
+      });
+      if (!existing) {
+        needsHost = true;
+      } else if (!hasActiveSocketForPlayer(existing.id)) {
+        needsHost = true;
+      }
+    }
+    if (needsHost) {
+      await prisma.room.update({
+        where: { id: room.id },
+        data: { hostPlayerId: player.id },
+      });
+      // Mirror the change into the in-memory LiveRoom if it's already loaded,
+      // so the socket layer sees the new host immediately on auth:resume.
+      const live = getRoomByCode(code);
+      if (live) live.hostPlayerId = player.id;
+      promotedToHost = true;
+    }
   }
 
   return NextResponse.json({

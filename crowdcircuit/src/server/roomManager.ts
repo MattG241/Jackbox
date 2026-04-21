@@ -328,6 +328,17 @@ export function unbindSocketContext(socketId: string) {
   return socketToContext.delete(socketId);
 }
 
+// Live truth for "is this player currently connected via any socket?" The
+// `Player.connected` DB flag is updated with a 10s debounce on disconnect
+// and can be stale across server restarts, so the socket map is the only
+// reliable way to know whether the player is reachable *right now*.
+export function hasActiveSocketForPlayer(playerId: string): boolean {
+  for (const ctx of socketToContext.values()) {
+    if (ctx.playerId === playerId) return true;
+  }
+  return false;
+}
+
 export async function markDisconnected(io: IO, socketId: string) {
   const ctx = socketToContext.get(socketId);
   if (!ctx) return;
@@ -1697,6 +1708,42 @@ export async function playerVoteGame(
       data: { selectedGameId: leader },
     });
   }
+  await broadcast(io, room);
+}
+
+// Safety-valve host handoff used from the lobby when the current host is
+// gone (disconnected or never existed). Any non-audience player can take
+// the role; we refuse if the existing host still has an active socket so
+// two people can't fight over it in a live lobby.
+export async function claimHost(
+  io: IO,
+  room: LiveRoom,
+  claimerId: string
+): Promise<void> {
+  if (room.phase !== "LOBBY" || room.matchId) {
+    throw new Error("Host can only be claimed in the lobby.");
+  }
+  const claimer = await prisma.player.findUnique({ where: { id: claimerId } });
+  if (!claimer) throw new Error("Player not found.");
+  if (claimer.isAudience)
+    throw new Error("Audience members can't host the match.");
+  if (room.hostPlayerId === claimerId) return;
+
+  if (room.hostPlayerId) {
+    const current = await prisma.player.findUnique({
+      where: { id: room.hostPlayerId },
+      select: { id: true },
+    });
+    if (current && hasActiveSocketForPlayer(current.id)) {
+      throw new Error("The current host is still connected.");
+    }
+  }
+
+  await prisma.room.update({
+    where: { id: room.id },
+    data: { hostPlayerId: claimerId },
+  });
+  room.hostPlayerId = claimerId;
   await broadcast(io, room);
 }
 

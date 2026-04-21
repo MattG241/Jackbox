@@ -175,10 +175,22 @@ function LobbyVoteCard({
   const [busy, setBusy] = useState(false);
   const [startBusy, setStartBusy] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [claimBusy, setClaimBusy] = useState(false);
+  const [claimError, setClaimError] = useState<string | null>(null);
   const myVote = snapshot.playerGameVotes[myPlayerId] ?? null;
   const canVote = !audience;
   const totalVotes = Object.values(snapshot.gameVotes).reduce((a, b) => a + b, 0);
   const corePlayerCount = snapshot.players.length;
+
+  // A room has an "active" host when the hostPlayerId is set AND that
+  // player is in the connected roster. Otherwise the room is effectively
+  // hostless and any non-audience player can claim it.
+  const activeHost = (() => {
+    if (!snapshot.hostPlayerId) return null;
+    const found = snapshot.players.find((p) => p.id === snapshot.hostPlayerId);
+    return found && found.connected ? found : null;
+  })();
+  const canClaimHost = !audience && !isHost && !activeHost;
 
   function startMatch() {
     if (startBusy) return;
@@ -187,6 +199,16 @@ function LobbyVoteCard({
     getSocket().emit("host:startMatch", (res: ActionResult) => {
       setStartBusy(false);
       if (!res.ok) setStartError(res.reason);
+    });
+  }
+
+  function claimHost() {
+    if (claimBusy) return;
+    setClaimBusy(true);
+    setClaimError(null);
+    getSocket().emit("host:claim", (res: ActionResult) => {
+      setClaimBusy(false);
+      if (!res.ok) setClaimError(res.reason);
     });
   }
 
@@ -290,10 +312,32 @@ function LobbyVoteCard({
             Host • highest-voted game wins
           </p>
         </div>
+      ) : canClaimHost ? (
+        <div className="cc-card sticky bottom-2 space-y-2 border-ember/40 bg-ember/10 p-4">
+          <p className="text-sm text-mist/80">
+            Nobody&apos;s hosting this room — tap below to take over and start
+            the match.
+          </p>
+          <button
+            type="button"
+            onClick={claimHost}
+            disabled={claimBusy}
+            className="cc-btn-primary w-full py-3 text-base"
+          >
+            {claimBusy ? "Taking over…" : "Take host"}
+          </button>
+          {claimError && (
+            <div role="alert" className="text-xs text-ember">
+              {claimError}
+            </div>
+          )}
+        </div>
       ) : (
         <p className="text-center text-xs text-mist/50">
           {canVote
-            ? "Host starts when you're all in. Top vote wins."
+            ? activeHost
+              ? `${activeHost.displayName} is hosting — they start when you're ready.`
+              : "Host starts when you're all in. Top vote wins."
             : "You'll vote on answers during the match."}
         </p>
       )}
