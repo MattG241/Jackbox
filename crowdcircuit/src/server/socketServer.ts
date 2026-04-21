@@ -9,12 +9,14 @@ import type {
 import {
   bindSocketContext,
   broadcast,
+  canControl,
   ensureRoomLoaded,
   getSocketContext,
   hostNextPhase,
   markDisconnected,
   playerSubmit,
   playerVote,
+  playerVoteGame,
   reportContent,
   startMatch,
   updateSettings,
@@ -51,6 +53,10 @@ export function attachSocketServer(httpServer: HttpServer): IO {
         if (!player) return cb({ ok: false, reason: "Session not found. Rejoin the room." });
         const room = await ensureRoomLoaded(player.room.code);
         if (!room) return cb({ ok: false, reason: "Room no longer exists." });
+        // Ensure the in-memory remote set is current. ensureRoomLoaded
+        // populates it from DB on first load, but a remote paired via
+        // the HTTP endpoint after that needs its id re-seeded here.
+        if (player.isRemote) room.remotePlayerIds.add(player.id);
         socket.join(`room:${room.code}`);
         room.sockets.add(socket.id);
         bindSocketContext(socket.id, {
@@ -70,6 +76,7 @@ export function attachSocketServer(httpServer: HttpServer): IO {
             displayName: player.displayName,
             isAudience: player.isAudience,
             isHost: player.id === room.hostPlayerId,
+            isRemote: player.isRemote,
             roomCode: room.code,
           },
         });
@@ -117,7 +124,7 @@ export function attachSocketServer(httpServer: HttpServer): IO {
       wrap(async () => {
         const room = await ensureRoomLoaded(ctx.roomCode);
         if (!room) throw new Error("Room not found.");
-        if (room.hostPlayerId !== ctx.playerId) throw new Error("Only the host can end the match.");
+        if (!canControl(ctx.playerId, room)) throw new Error("Only the host can end the match.");
         await endMatch(io, room);
       }, cb);
     });
@@ -149,6 +156,16 @@ export function attachSocketServer(httpServer: HttpServer): IO {
         const room = await ensureRoomLoaded(ctx.roomCode);
         if (!room) throw new Error("Room not found.");
         await playerVote(io, room, ctx.playerId, submissionId);
+      }, cb);
+    });
+
+    socket.on("player:voteGame", ({ gameId }, cb) => {
+      const ctx = getSocketContext(socket.id);
+      if (!ctx) return cb({ ok: false, reason: "Not in a room." });
+      wrap(async () => {
+        const room = await ensureRoomLoaded(ctx.roomCode);
+        if (!room) throw new Error("Room not found.");
+        await playerVoteGame(io, room, ctx.playerId, gameId);
       }, cb);
     });
 

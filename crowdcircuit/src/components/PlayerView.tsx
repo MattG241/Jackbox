@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRoomStore } from "@/stores/useRoomStore";
 import { getSocket } from "@/lib/socketClient";
 import { Countdown } from "./Countdown";
-import type { GameCard, PlayerStageTarget } from "@/lib/types";
+import type { GameCard, PlayerStageTarget, RoomSnapshot } from "@/lib/types";
 import { Canvas } from "./Canvas";
 import { DrawingView, tryParseDrawing } from "./DrawingView";
 import { emptyDrawing, isDrawingNonTrivial, type Drawing } from "@/lib/drawing";
@@ -20,16 +20,21 @@ export function PlayerView() {
   );
 
   return (
-    <main className="mx-auto flex min-h-[100dvh] w-full max-w-md flex-col gap-4 px-4 py-6">
+    <main className="mx-auto flex min-h-[100dvh] w-full max-w-md flex-col gap-4 px-4 py-5">
       <Header
         audience={audience}
         displayName={session.displayName}
         code={snapshot.code}
-        gameName={game?.name ?? null}
         avatarColor={me?.avatarColor ?? "#ff4f7b"}
         avatarEmoji={me?.avatarEmoji ?? "🎲"}
       />
-      {snapshot.phase === "LOBBY" && <LobbyCard audience={audience} game={game ?? null} />}
+      {snapshot.phase === "LOBBY" && (
+        <LobbyVoteCard
+          snapshot={snapshot}
+          audience={audience}
+          myPlayerId={session.playerId}
+        />
+      )}
       {snapshot.phase === "SUBMIT" && !audience && (
         <SubmitCard
           submitted={!!me && !!snapshot.round?.submittedPlayerIds.includes(me.id)}
@@ -65,20 +70,18 @@ function Header({
   audience,
   displayName,
   code,
-  gameName,
   avatarColor,
   avatarEmoji,
 }: {
   audience: boolean;
   displayName: string;
   code: string;
-  gameName: string | null;
   avatarColor: string;
   avatarEmoji: string;
 }) {
   return (
     <header className="flex items-center justify-between">
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3">
         <div
           className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-xl"
           style={{ background: avatarColor }}
@@ -86,37 +89,131 @@ function Header({
         >
           {avatarEmoji}
         </div>
-        <div>
-          <div className="text-xs uppercase tracking-widest text-mist/60">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-widest text-mist/60">
             {audience ? "Audience" : "Player"}
-            {gameName ? ` • ${gameName}` : ""}
           </div>
-          <div className="text-lg font-semibold">{displayName}</div>
+          <div className="truncate text-base font-semibold">{displayName}</div>
         </div>
       </div>
       <div className="text-right">
-        <div className="text-xs uppercase tracking-widest text-mist/60">Room</div>
-        <div className="font-mono text-lg tracking-[0.35em] text-neon">{code}</div>
+        <div className="text-[10px] uppercase tracking-widest text-mist/60">Room</div>
+        <div className="font-mono text-base tracking-[0.35em] text-neon">{code}</div>
       </div>
     </header>
   );
 }
 
-function LobbyCard({ audience, game }: { audience: boolean; game: GameCard | null }) {
+// Lobby view on the phone: tap-to-vote for which game to play next. The
+// card shows the current leader at the top (mirrors the TV), then the full
+// list below with per-game vote counts and a "You" chip on the one you
+// picked. Tapping a game toggles your vote.
+function LobbyVoteCard({
+  snapshot,
+  audience,
+  myPlayerId,
+}: {
+  snapshot: RoomSnapshot;
+  audience: boolean;
+  myPlayerId: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const myVote = snapshot.playerGameVotes[myPlayerId] ?? null;
+  const canVote = !audience;
+  const totalVotes = Object.values(snapshot.gameVotes).reduce((a, b) => a + b, 0);
+
+  // Keep a stable sort (registry order) so the list doesn't jump around as
+  // votes come in. Highlight the current leader at the top of the card.
+  const leaderId = (() => {
+    let best: string | null = null;
+    let bestCount = 0;
+    for (const g of snapshot.games) {
+      const count = snapshot.gameVotes[g.id] ?? 0;
+      if (count > bestCount) {
+        bestCount = count;
+        best = g.id;
+      }
+    }
+    return bestCount > 0 ? best : null;
+  })();
+  const leader = leaderId
+    ? snapshot.games.find((g) => g.id === leaderId) ?? null
+    : null;
+
+  function vote(gameId: string) {
+    if (!canVote || busy) return;
+    setBusy(true);
+    // Toggle off if already voted for this game.
+    const payload = myVote === gameId ? { gameId: null } : { gameId };
+    getSocket().emit("player:voteGame", payload, () => setBusy(false));
+  }
+
   return (
     <div className="cc-card p-5">
-      <h2 className="text-xl font-semibold">You&apos;re in.</h2>
-      {game && (
-        <div className="mt-2 rounded-xl bg-white/5 p-3 text-sm">
-          <div className="text-xs uppercase tracking-widest text-mist/60">Next up</div>
-          <div className="mt-1 font-semibold">{game.name}</div>
-          <div className="text-mist/70">{game.tagline}</div>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">
+          {canVote ? "Vote for the next game" : "Waiting in the audience"}
+        </h2>
+        <span className="text-xs text-mist/50">
+          {totalVotes} vote{totalVotes === 1 ? "" : "s"}
+        </span>
+      </div>
+      {leader ? (
+        <div className="mt-3 rounded-xl border border-white/10 bg-white/5 p-3">
+          <div className="text-[10px] uppercase tracking-widest text-mist/60">
+            Leading
+          </div>
+          <div className="mt-0.5 font-semibold">{leader.name}</div>
+          <div className="text-xs italic text-mist/70">{leader.tagline}</div>
         </div>
+      ) : (
+        <p className="mt-2 text-sm text-mist/70">
+          {canVote
+            ? "Tap a game to vote. Tap again to unvote."
+            : "Players are picking the next game on their phones."}
+        </p>
       )}
-      <p className="mt-3 text-sm text-mist/70">
-        {audience
-          ? "You're in audience mode — you'll vote but won't submit."
-          : "The host will start the match. Loosen your thumbs."}
+      <ul className="mt-4 grid gap-2">
+        {snapshot.games.map((g) => {
+          const count = snapshot.gameVotes[g.id] ?? 0;
+          const mine = myVote === g.id;
+          return (
+            <li key={g.id}>
+              <button
+                type="button"
+                onClick={() => vote(g.id)}
+                disabled={!canVote || busy}
+                className={`w-full rounded-xl border p-3 text-left transition active:scale-[0.99] ${
+                  mine
+                    ? "border-ember bg-ember/10 shadow-[0_0_16px_rgba(255,79,123,0.25)]"
+                    : "border-white/10 bg-white/[0.03] hover:border-white/30"
+                } ${!canVote ? "opacity-60" : ""}`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate font-semibold">{g.name}</div>
+                    <div className="truncate text-xs italic text-mist/60">
+                      {g.tagline}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {mine && (
+                      <span className="cc-chip !bg-ember/20 !text-ember">You</span>
+                    )}
+                    <span className="cc-chip min-w-[2ch] justify-center tabular-nums">
+                      {count}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-4 text-xs text-mist/50">
+        {canVote
+          ? "Host starts the match when you're ready. Highest-voted game wins."
+          : "You'll be able to vote on answers during the match."}
       </p>
     </div>
   );

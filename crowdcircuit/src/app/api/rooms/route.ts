@@ -74,12 +74,16 @@ async function createRoom(req: NextRequest) {
     });
     return NextResponse.json({
       code: updated.code,
+      // Only the TV creator ever sees this value — it goes into localStorage
+      // so the TV can render the "Host remote" QR on subsequent reloads.
+      remoteToken: updated.remoteToken,
       session: {
         sessionToken: host.sessionToken,
         playerId: host.id,
         displayName: host.displayName,
         isAudience: hostIsAudience ?? false,
         isHost: true,
+        isRemote: false,
         roomCode: updated.code,
       },
     });

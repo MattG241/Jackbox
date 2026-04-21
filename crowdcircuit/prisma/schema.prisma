@@ -55,6 +55,11 @@ model Room {
   code            String     @unique
   status          RoomStatus @default(LOBBY)
   hostPlayerId    String?    @unique
+  // Shared secret encoded in the TV's "Remote" QR. Any phone that presents
+  // this token gets host-level command authority for the room.
+  // Nullable so `prisma db push` can add the column to existing rows — old
+  // rooms surface the "Remote unavailable" fallback until recreated.
+  remoteToken     String?    @default(cuid())
   familyMode      Boolean    @default(false)
   streamerMode    Boolean    @default(false)
   selectedGameId  String     @default("hot-take-hustle")
@@ -74,6 +79,9 @@ model Player {
   displayName   String
   sessionToken  String   @unique
   isAudience    Boolean  @default(false)
+  // True for phone-as-remote controllers. Remote players are non-playing
+  // (also isAudience = true) but are authorized to issue host commands.
+  isRemote      Boolean  @default(false)
   connected     Boolean  @default(true)
   avatarColor   String   @default("#ff4f7b")
   avatarEmoji   String   @default("🎲")

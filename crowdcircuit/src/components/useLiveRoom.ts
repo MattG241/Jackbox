@@ -1,17 +1,17 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
 import { clearSession, loadSession } from "@/lib/session";
 import { getSocket } from "@/lib/socketClient";
 import type { RoomSnapshot } from "@/lib/types";
 import { useRoomStore } from "@/stores/useRoomStore";
 
 // Hook that wires a page to a live room: resumes the session, listens for
-// snapshots, and handles reconnect feedback. If the session isn't found it
-// redirects back to the landing page.
+// snapshots, and handles reconnect feedback. If no session is stored locally
+// the hook is a no-op — the page is responsible for rendering the inline
+// join form. If the stored session turns out to be stale, it's cleared and
+// the hook bails; the page will re-render into the join form.
 export function useLiveRoom(roomCode: string) {
-  const router = useRouter();
   const { setSession, setSnapshot, setConnected } = useRoomStore();
   const resumedRef = useRef(false);
 
@@ -19,7 +19,7 @@ export function useLiveRoom(roomCode: string) {
     const code = roomCode.toUpperCase();
     const stored = loadSession(code);
     if (!stored) {
-      router.replace("/");
+      // No session yet — let the page show the inline join UI.
       return;
     }
     setSession(stored);
@@ -30,8 +30,10 @@ export function useLiveRoom(roomCode: string) {
       setConnected(true);
       socket.emit("auth:resume", { sessionToken: stored.sessionToken }, (res) => {
         if (!res.ok) {
+          // Session is stale. Clear it and reload so the page shows the
+          // inline join form instead of leaving the user stuck.
           clearSession(code);
-          router.replace("/");
+          if (typeof window !== "undefined") window.location.reload();
           return;
         }
         resumedRef.current = true;
@@ -51,5 +53,5 @@ export function useLiveRoom(roomCode: string) {
       socket.off("disconnect", onDisconnect);
       socket.off("room:state", onState);
     };
-  }, [roomCode, router, setConnected, setSession, setSnapshot]);
+  }, [roomCode, setConnected, setSession, setSnapshot]);
 }

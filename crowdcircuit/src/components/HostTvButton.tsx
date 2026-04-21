@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { saveSession } from "@/lib/session";
+import { saveRemoteToken, saveSession } from "@/lib/session";
 
 export function HostTvButton({
   className,
@@ -26,7 +26,12 @@ export function HostTvButton({
         body: JSON.stringify({ hostIsAudience: true }),
       });
       const text = await res.text();
-      let json: { code?: string; session?: unknown; error?: unknown } = {};
+      let json: {
+        code?: string;
+        session?: unknown;
+        remoteToken?: string;
+        error?: unknown;
+      } = {};
       try {
         json = text ? JSON.parse(text) : {};
       } catch {
@@ -43,6 +48,9 @@ export function HostTvButton({
         return;
       }
       saveSession(json.session as never);
+      if (json.code && json.remoteToken) {
+        saveRemoteToken(json.code, json.remoteToken);
+      }
       router.push(`/host/${json.code}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Network error.";

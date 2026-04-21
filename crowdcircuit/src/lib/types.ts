@@ -127,6 +127,10 @@ export interface RoomSnapshot {
   players: PublicPlayer[];
   audienceCount: number;
   games: GameCard[];
+  // Lobby voting: how many votes each game has right now, plus per-player
+  // picks so clients can render "you voted for X" without extra roundtrips.
+  gameVotes: Record<string, number>;
+  playerGameVotes: Record<string, string>;
   // Populated on MATCH_END — MVP/awards based on the finished match.
   highlights: MatchHighlight[];
   round: {
@@ -169,6 +173,9 @@ export interface SessionHandshake {
   displayName: string;
   isAudience: boolean;
   isHost: boolean;
+  // True for phone-as-remote controller sessions. Remotes are authorized
+  // for host commands even though they aren't the TV host.
+  isRemote: boolean;
   roomCode: string;
 }
 
@@ -184,6 +191,13 @@ export interface ClientToServerEvents {
   "host:endMatch": (cb: (res: ActionResult) => void) => void;
   "player:submit": (p: { text: string }, cb: (res: ActionResult) => void) => void;
   "player:vote": (p: { submissionId: string }, cb: (res: ActionResult) => void) => void;
+  // Lobby-only: players cast a vote for which game to play next. Calling with
+  // the same gameId again clears the vote (toggle). Ignored once the match
+  // has started.
+  "player:voteGame": (
+    p: { gameId: string | null },
+    cb: (res: ActionResult) => void
+  ) => void;
   "player:report": (
     p: { content: string; reason?: string },
     cb: (res: ActionResult) => void

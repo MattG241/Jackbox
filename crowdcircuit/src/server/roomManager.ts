@@ -79,6 +79,14 @@ interface LiveRoom {
   // Computed on MATCH_END, then broadcast in the snapshot so the host TV can
   // render MVP awards. Cleared when the room returns to LOBBY.
   highlights: MatchHighlight[];
+  // Player ids authorized as phone-as-remote controllers — they can issue
+  // host commands even though they aren't the TV's hostPlayerId. Populated
+  // from DB on room load and updated as new remotes pair in.
+  remotePlayerIds: Set<string>;
+  // Lobby game voting — each non-audience player can cast one vote for the
+  // next game. Cleared when a match starts or when the room returns to
+  // lobby after a match. Remote/host controllers can also vote.
+  gameVotes: Map<string, string>; // playerId -> gameId
 }
 
 const rooms = new Map<string, LiveRoom>(); // keyed by room code
@@ -114,6 +122,10 @@ export async function ensureRoomLoaded(code: string): Promise<LiveRoom | null> {
   if (existing) return existing;
   const row = await prisma.room.findUnique({ where: { code } });
   if (!row) return null;
+  const remotes = await prisma.player.findMany({
+    where: { roomId: row.id, isRemote: true },
+    select: { id: true },
+  });
   const live: LiveRoom = {
     id: row.id,
     code: row.code,
@@ -128,9 +140,18 @@ export async function ensureRoomLoaded(code: string): Promise<LiveRoom | null> {
     phaseTimer: null,
     sockets: new Set(),
     highlights: [],
+    remotePlayerIds: new Set(remotes.map((r) => r.id)),
+    gameVotes: new Map(),
   };
   rooms.set(code, live);
   return live;
+}
+
+// True if the given player is authorized to issue host-level commands —
+// either the TV host, or any phone paired as a remote controller.
+export function canControl(playerId: string, room: LiveRoom): boolean {
+  if (room.hostPlayerId && playerId === room.hostPlayerId) return true;
+  return room.remotePlayerIds.has(playerId);
 }
 
 // For multi-stage games the active SubmissionKind depends on which stage we
@@ -186,7 +207,9 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
       score: scoreByPlayer.get(p.id) ?? 0,
     }));
 
-  const audienceCount = players.filter((p) => p.isAudience).length;
+  // Remote controllers are technically audience (non-playing) but shouldn't
+  // show up in the "X in audience" headline — they're backstage crew.
+  const audienceCount = players.filter((p) => p.isAudience && !p.isRemote).length;
 
   let submittedIds: string[] = [];
   let votedIds: string[] = [];
@@ -211,6 +234,21 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
       }))
     : [];
 
+  // Tally lobby game votes. Build a count-per-game map and a reverse map so
+  // clients can show "you voted for X" without extra roundtrips. Only votes
+  // for games that still exist in the registry are counted.
+  const gameVotes: Record<string, number> = {};
+  const playerGameVotes: Record<string, string> = {};
+  const corePlayerIds = new Set(corePlayers.map((p) => p.id));
+  for (const [pid, gid] of room.gameVotes.entries()) {
+    if (!GAMES[gid]) continue;
+    // Include votes from any connected player (core + remote); audience
+    // members don't vote to keep lobby counts meaningful.
+    if (!corePlayerIds.has(pid) && !room.remotePlayerIds.has(pid)) continue;
+    gameVotes[gid] = (gameVotes[gid] ?? 0) + 1;
+    playerGameVotes[pid] = gid;
+  }
+
   return {
     code: room.code,
     status: room.matchId ? "IN_MATCH" : "LOBBY",
@@ -224,6 +262,8 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
     audienceCount,
     games: toGameCards(),
     highlights: room.highlights,
+    gameVotes,
+    playerGameVotes,
     round: room.round
       ? {
           number: room.round.number,
@@ -339,7 +379,19 @@ async function pickPromptAndCriterion(room: LiveRoom, usedPromptIds: Set<string>
 }
 
 export async function startMatch(io: IO, room: LiveRoom, requesterPlayerId: string) {
-  if (requesterPlayerId !== room.hostPlayerId) throw new Error("Only the host can start.");
+  if (!canControl(requesterPlayerId, room)) throw new Error("Only the host can start.");
+
+  // Resolve which game to play: if anyone voted, take the highest-voted game
+  // (ties broken by earliest first-vote time); otherwise fall back to whatever
+  // is currently selected. This replaces the old host-only picker.
+  const winner = resolveVotedGame(room);
+  if (winner && winner !== room.selectedGameId) {
+    room.selectedGameId = winner;
+    await prisma.room.update({
+      where: { id: room.id },
+      data: { selectedGameId: winner },
+    });
+  }
   if (!GAMES[room.selectedGameId])
     throw new Error("Pick a game before starting the match.");
 
@@ -348,6 +400,9 @@ export async function startMatch(io: IO, room: LiveRoom, requesterPlayerId: stri
   });
   if (corePlayers < DEFAULTS.MIN_PLAYERS)
     throw new Error(`Need at least ${DEFAULTS.MIN_PLAYERS} players.`);
+
+  // Clear lobby votes for the next round's vote.
+  room.gameVotes.clear();
 
   room.currentGameId = room.selectedGameId;
   const match = await prisma.match.create({
@@ -1122,6 +1177,8 @@ export async function endMatch(io: IO, room: LiveRoom) {
     room.matchId = null;
     room.round = null;
     room.highlights = [];
+    // Fresh round of game voting for the next match.
+    room.gameVotes.clear();
     await broadcast(io, room);
   }, 20_000);
 }
@@ -1305,7 +1362,7 @@ async function computeHighlights(room: LiveRoom): Promise<MatchHighlight[]> {
 }
 
 export async function hostNextPhase(io: IO, room: LiveRoom, requesterPlayerId: string) {
-  if (requesterPlayerId !== room.hostPlayerId) throw new Error("Only the host can advance.");
+  if (!canControl(requesterPlayerId, room)) throw new Error("Only the host can advance.");
   const def = room.round ? getGame(room.round.gameId) : null;
   if (room.phase === "SUBMIT") return enterRevealPhase(io, room);
   if (room.phase === "REVEAL") {
@@ -1321,6 +1378,7 @@ export async function hostNextPhase(io: IO, room: LiveRoom, requesterPlayerId: s
     room.phase = "LOBBY";
     room.matchId = null;
     room.round = null;
+    room.gameVotes.clear();
     await broadcast(io, room);
   }
 }
@@ -1547,7 +1605,7 @@ export async function updateSettings(
   requesterPlayerId: string,
   patch: { familyMode?: boolean; streamerMode?: boolean; selectedGameId?: string }
 ) {
-  if (requesterPlayerId !== room.hostPlayerId) throw new Error("Only the host can change settings.");
+  if (!canControl(requesterPlayerId, room)) throw new Error("Only the host can change settings.");
   if (room.matchId) throw new Error("Can't change settings mid-match.");
   const data: { familyMode?: boolean; streamerMode?: boolean; selectedGameId?: string } = {};
   if (typeof patch.familyMode === "boolean") {
@@ -1566,6 +1624,68 @@ export async function updateSettings(
   }
   if (Object.keys(data).length)
     await prisma.room.update({ where: { id: room.id }, data });
+}
+
+// Count current lobby votes and return the gameId with the most. Returns null
+// if there are no votes at all. Ties are broken by the order games appear in
+// the registry — stable across restarts.
+function resolveVotedGame(room: LiveRoom): string | null {
+  if (room.gameVotes.size === 0) return null;
+  const tally = new Map<string, number>();
+  for (const gid of room.gameVotes.values()) {
+    if (!GAMES[gid]) continue;
+    tally.set(gid, (tally.get(gid) ?? 0) + 1);
+  }
+  if (tally.size === 0) return null;
+  let best: string | null = null;
+  let bestCount = -1;
+  for (const g of GAME_LIST) {
+    const count = tally.get(g.id) ?? 0;
+    if (count > bestCount) {
+      bestCount = count;
+      best = g.id;
+    }
+  }
+  return best;
+}
+
+export async function playerVoteGame(
+  io: IO,
+  room: LiveRoom,
+  voterId: string,
+  gameId: string | null
+) {
+  if (room.phase !== "LOBBY" || room.matchId) {
+    throw new Error("Game voting is only open in the lobby.");
+  }
+  const voter = await prisma.player.findUnique({ where: { id: voterId } });
+  if (!voter) throw new Error("Voter not found.");
+  if (voter.isAudience && !voter.isRemote) {
+    throw new Error("Audience members don't vote on games.");
+  }
+  if (gameId === null) {
+    room.gameVotes.delete(voterId);
+  } else {
+    if (!GAMES[gameId]) throw new Error("Unknown game.");
+    const previous = room.gameVotes.get(voterId);
+    if (previous === gameId) {
+      // Tapping the same game again clears the vote (toggle behaviour).
+      room.gameVotes.delete(voterId);
+    } else {
+      room.gameVotes.set(voterId, gameId);
+    }
+  }
+  // Surface the current front-runner as the room's selectedGameId so the TV's
+  // "up next" display + match-start fallback always reflect the live vote.
+  const leader = resolveVotedGame(room);
+  if (leader && leader !== room.selectedGameId) {
+    room.selectedGameId = leader;
+    await prisma.room.update({
+      where: { id: room.id },
+      data: { selectedGameId: leader },
+    });
+  }
+  await broadcast(io, room);
 }
 
 export async function reportContent(

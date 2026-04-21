@@ -31,7 +31,12 @@ export const castVoteSchema = z.object({
   submissionId: z.string().min(1),
 });
 
+export const remoteJoinSchema = z.object({
+  token: z.string().min(8).max(120),
+});
+
 export type CreateRoomInput = z.infer<typeof createRoomSchema>;
 export type JoinRoomInput = z.infer<typeof joinRoomSchema>;
 export type SubmitAnswerInput = z.infer<typeof submitAnswerSchema>;
 export type CastVoteInput = z.infer<typeof castVoteSchema>;
+export type RemoteJoinInput = z.infer<typeof remoteJoinSchema>;

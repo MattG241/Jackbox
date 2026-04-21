@@ -90,6 +90,7 @@ export async function POST(
       displayName: player.displayName,
       isAudience: player.isAudience,
       isHost: false,
+      isRemote: false,
       roomCode: code,
     },
   });
