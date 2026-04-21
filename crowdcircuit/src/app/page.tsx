@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { CreateRoomForm } from "@/components/CreateRoomForm";
 import { JoinRoomForm } from "@/components/JoinRoomForm";
+import { HostTvButton } from "@/components/HostTvButton";
 import { GAME_LIST } from "@/games/registry";
 
 export default function Landing() {
@@ -35,7 +36,17 @@ export default function Landing() {
             takes, and a host persona that doesn&apos;t make you cringe. Built for
             3–10 players with audience mode for the rest of the couch.
           </p>
-          <div className="mt-10 grid gap-5 sm:grid-cols-2">
+          <div className="mt-10 cc-card p-5">
+            <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-ember">
+              On the big screen
+            </div>
+            <p className="mb-3 text-sm text-mist/70">
+              Open this on a TV or shared display. We&apos;ll drop a QR code on
+              screen — everyone scans with their phone to join.
+            </p>
+            <HostTvButton />
+          </div>
+          <div className="mt-5 grid gap-5 sm:grid-cols-2">
             <CreateRoomForm />
             <JoinRoomForm />
           </div>

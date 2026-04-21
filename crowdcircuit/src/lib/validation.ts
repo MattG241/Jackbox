@@ -5,11 +5,14 @@ const avatarColorValues = AVATAR_COLORS.map((c) => c.color) as [string, ...strin
 const avatarEmojiValues = AVATAR_EMOJIS as unknown as [string, ...string[]];
 
 export const createRoomSchema = z.object({
-  hostName: z.string().min(1).max(20),
+  hostName: z.string().min(1).max(20).optional(),
   familyMode: z.boolean().optional().default(false),
   streamerMode: z.boolean().optional().default(false),
   avatarColor: z.enum(avatarColorValues).optional(),
   avatarEmoji: z.enum(avatarEmojiValues).optional(),
+  // When true, the host is a non-playing TV display. Core players all
+  // join via QR from their phones.
+  hostIsAudience: z.boolean().optional().default(false),
 });
 
 export const joinRoomSchema = z.object({

@@ -22,8 +22,10 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const { hostName, familyMode, streamerMode, avatarColor, avatarEmoji } = parsed.data;
-  const nameCheck = isDisplayNameOk(hostName, familyMode);
+  const { hostName, familyMode, streamerMode, avatarColor, avatarEmoji, hostIsAudience } =
+    parsed.data;
+  const effectiveName = hostName && hostName.trim().length > 0 ? hostName : "TV";
+  const nameCheck = isDisplayNameOk(effectiveName, familyMode);
   if (!nameCheck.ok) {
     return NextResponse.json({ error: nameCheck.reason }, { status: 400 });
   }
@@ -43,7 +45,7 @@ export async function POST(req: NextRequest) {
           create: {
             displayName: nameCheck.cleaned,
             sessionToken,
-            isAudience: false,
+            isAudience: hostIsAudience ?? false,
             ...(avatarColor ? { avatarColor } : {}),
             ...(avatarEmoji ? { avatarEmoji } : {}),
           },
@@ -62,7 +64,7 @@ export async function POST(req: NextRequest) {
         sessionToken: host.sessionToken,
         playerId: host.id,
         displayName: host.displayName,
-        isAudience: false,
+        isAudience: hostIsAudience ?? false,
         isHost: true,
         roomCode: updated.code,
       },
