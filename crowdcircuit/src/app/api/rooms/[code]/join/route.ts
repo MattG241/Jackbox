@@ -25,7 +25,14 @@ export async function POST(
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const { displayName, asAudience, avatarColor, avatarEmoji } = parsed.data;
+  const {
+    displayName,
+    asAudience,
+    avatarColor,
+    avatarEmoji,
+    avatarKind,
+    avatarImage,
+  } = parsed.data;
 
   const room = await prisma.room.findUnique({
     where: { code },
@@ -71,6 +78,9 @@ export async function POST(
   }
 
   const sessionToken = tokenGen();
+  // Only persist avatarImage when the kind actually needs it. EMOJI avatars
+  // fall back to avatarColor/avatarEmoji and leave avatarImage null.
+  const wantsImage = avatarKind === "DRAWING" || avatarKind === "PHOTO";
   const player = await prisma.player.create({
     data: {
       roomId: room.id,
@@ -79,6 +89,8 @@ export async function POST(
       isAudience: asAudience,
       ...(avatarColor ? { avatarColor } : {}),
       ...(avatarEmoji ? { avatarEmoji } : {}),
+      ...(avatarKind ? { avatarKind } : {}),
+      ...(wantsImage && avatarImage ? { avatarImage } : {}),
     },
   });
 

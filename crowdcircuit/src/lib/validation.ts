@@ -22,6 +22,11 @@ export const joinRoomSchema = z.object({
   asAudience: z.boolean().optional().default(false),
   avatarColor: z.enum(avatarColorValues).optional(),
   avatarEmoji: z.enum(avatarEmojiValues).optional(),
+  // Richer avatars. avatarKind defaults to EMOJI; DRAWING stores the
+  // client-side Drawing JSON; PHOTO stores a compressed data: URL.
+  avatarKind: z.enum(["EMOJI", "DRAWING", "PHOTO"]).optional(),
+  // Size cap: drawings compress to a few KB, selfies are clamped to ~64KB.
+  avatarImage: z.string().max(200_000).optional(),
 });
 
 export const submitAnswerSchema = z.object({

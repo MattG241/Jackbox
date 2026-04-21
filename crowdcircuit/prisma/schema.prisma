@@ -85,6 +85,11 @@ model Player {
   connected     Boolean  @default(true)
   avatarColor   String   @default("#ff4f7b")
   avatarEmoji   String   @default("🎲")
+  // Discriminator for which avatar to render. EMOJI uses avatarEmoji +
+  // avatarColor. DRAWING + PHOTO use avatarImage (a JSON drawing blob or
+  // a compressed data: URL respectively).
+  avatarKind    String   @default("EMOJI")
+  avatarImage   String?
   joinedAt      DateTime @default(now())
   lastSeenAt    DateTime @default(now())
 

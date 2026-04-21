@@ -5,6 +5,7 @@ import { useRoomStore } from "@/stores/useRoomStore";
 import { getSocket } from "@/lib/socketClient";
 import type { ActionResult, GameCard, Phase, RoomSnapshot } from "@/lib/types";
 import { Countdown } from "./Countdown";
+import { PlayerAvatar } from "./Avatar";
 
 const PHASE_LABELS: Record<Phase, string> = {
   LOBBY: "Lobby",
@@ -397,13 +398,7 @@ function PlayerStatus({ snapshot }: { snapshot: RoomSnapshot }) {
               }`}
             >
               <span className="flex min-w-0 items-center gap-2">
-                <span
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-sm"
-                  style={{ background: p.avatarColor }}
-                  aria-hidden
-                >
-                  {p.avatarEmoji}
-                </span>
+                <PlayerAvatar player={p} size="sm" />
                 <span className="truncate">{p.displayName}</span>
               </span>
               <span className={done ? "text-neon" : "text-mist/50"}>

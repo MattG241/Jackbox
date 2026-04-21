@@ -3,6 +3,8 @@
 
 export type Phase = "LOBBY" | "SUBMIT" | "REVEAL" | "VOTE" | "SCORE" | "MATCH_END";
 
+export type AvatarKind = "EMOJI" | "DRAWING" | "PHOTO";
+
 export interface PublicPlayer {
   id: string;
   displayName: string;
@@ -11,6 +13,10 @@ export interface PublicPlayer {
   isHost: boolean;
   avatarColor: string;
   avatarEmoji: string;
+  // avatarKind picks between the EMOJI (color+emoji) flow and the richer
+  // DRAWING (serialized Drawing) or PHOTO (compressed data URL) flows.
+  avatarKind: AvatarKind;
+  avatarImage: string | null;
   score: number;
 }
 

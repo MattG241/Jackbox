@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { saveSession } from "@/lib/session";
 import { AVATAR_COLORS, AVATAR_EMOJIS } from "@/lib/avatars";
-import { AvatarPicker } from "./AvatarPicker";
+import { AvatarBuilder, type AvatarDraft } from "./AvatarBuilder";
 
 export function JoinRoomForm() {
   const router = useRouter();
@@ -14,12 +14,13 @@ export function JoinRoomForm() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audienceOffered, setAudienceOffered] = useState(false);
-  const [avatarColor, setAvatarColor] = useState(
-    AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)].color
-  );
-  const [avatarEmoji, setAvatarEmoji] = useState(
-    AVATAR_EMOJIS[Math.floor(Math.random() * AVATAR_EMOJIS.length)]
-  );
+  const [avatar, setAvatar] = useState<AvatarDraft>(() => ({
+    kind: "EMOJI",
+    color:
+      AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)].color,
+    emoji: AVATAR_EMOJIS[Math.floor(Math.random() * AVATAR_EMOJIS.length)],
+    image: null,
+  }));
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -32,7 +33,14 @@ export function JoinRoomForm() {
       const res = await fetch(`/api/rooms/${normalized}/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ displayName, asAudience, avatarColor, avatarEmoji }),
+        body: JSON.stringify({
+          displayName,
+          asAudience,
+          avatarColor: avatar.color,
+          avatarEmoji: avatar.emoji,
+          avatarKind: avatar.kind,
+          avatarImage: avatar.image ?? undefined,
+        }),
       });
       const json = await res.json();
       if (!res.ok) {
@@ -77,12 +85,7 @@ export function JoinRoomForm() {
         required
       />
       <div className="mt-3">
-        <AvatarPicker
-          color={avatarColor}
-          emoji={avatarEmoji}
-          onColor={setAvatarColor}
-          onEmoji={setAvatarEmoji}
-        />
+        <AvatarBuilder value={avatar} onChange={setAvatar} />
       </div>
       <label className="mt-3 flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2 text-sm">
         <input

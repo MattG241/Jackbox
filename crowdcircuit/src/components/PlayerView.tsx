@@ -4,16 +4,27 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRoomStore } from "@/stores/useRoomStore";
 import { getSocket } from "@/lib/socketClient";
 import { Countdown } from "./Countdown";
-import type { GameCard, PlayerStageTarget, RoomSnapshot } from "@/lib/types";
+import type {
+  ActionResult,
+  GameCard,
+  Phase,
+  PlayerStageTarget,
+  PublicPlayer,
+  RoomSnapshot,
+} from "@/lib/types";
 import { Canvas } from "./Canvas";
 import { DrawingView, tryParseDrawing } from "./DrawingView";
 import { emptyDrawing, isDrawingNonTrivial, type Drawing } from "@/lib/drawing";
+import { Avatar, PlayerAvatar } from "./Avatar";
 
 export function PlayerView() {
   const { snapshot, session } = useRoomStore();
   if (!snapshot || !session) return <Loader />;
   const me = snapshot.players.find((p) => p.id === session.playerId);
   const audience = session.isAudience;
+  // Host authority is derived live from the snapshot rather than the cached
+  // session — that way a reconnect or host hand-off picks up correctly.
+  const isHost = !!me && me.id === snapshot.hostPlayerId;
   const game = snapshot.games.find(
     (g) =>
       g.id === (snapshot.round?.gameId ?? snapshot.currentGameId ?? snapshot.selectedGameId)
@@ -25,14 +36,15 @@ export function PlayerView() {
         audience={audience}
         displayName={session.displayName}
         code={snapshot.code}
-        avatarColor={me?.avatarColor ?? "#ff4f7b"}
-        avatarEmoji={me?.avatarEmoji ?? "🎲"}
+        me={me ?? null}
+        isHost={isHost}
       />
       {snapshot.phase === "LOBBY" && (
         <LobbyVoteCard
           snapshot={snapshot}
           audience={audience}
           myPlayerId={session.playerId}
+          isHost={isHost}
         />
       )}
       {snapshot.phase === "SUBMIT" && !audience && (
@@ -59,6 +71,9 @@ export function PlayerView() {
         )}
       {snapshot.phase === "SCORE" && <ScoreCard />}
       {snapshot.phase === "MATCH_END" && <EndCard />}
+      {isHost && snapshot.phase !== "LOBBY" && snapshot.phase !== "MATCH_END" && (
+        <HostAdvanceChip phase={snapshot.phase} />
+      )}
       <div aria-live="polite" className="mt-auto text-center text-xs text-mist/40">
         {me ? (me.connected ? "Connected" : "Reconnecting…") : "Session restored"}
       </div>
@@ -66,32 +81,70 @@ export function PlayerView() {
   );
 }
 
+// Host-only. When you're the host, the phases auto-advance on a timer —
+// this lets you skip ahead without leaving the player UI. Rendered below
+// the phase card so it doesn't crowd your submission/vote UI.
+function HostAdvanceChip({ phase }: { phase: Phase }) {
+  const PHASE_NEXT: Partial<Record<Phase, string>> = {
+    SUBMIT: "Skip to reveal",
+    REVEAL: "Start voting",
+    VOTE: "End voting",
+    SCORE: "Next round",
+  };
+  const label = PHASE_NEXT[phase] ?? "Advance";
+  const [busy, setBusy] = useState(false);
+  function advance() {
+    if (busy) return;
+    setBusy(true);
+    getSocket().emit("host:nextPhase", (res: ActionResult) => {
+      setBusy(false);
+      if (!res.ok) console.warn("nextPhase failed:", res.reason);
+    });
+  }
+  return (
+    <button
+      type="button"
+      onClick={advance}
+      disabled={busy}
+      className="cc-btn-ghost w-full text-sm"
+    >
+      {busy ? "Working…" : `Host: ${label}`}
+    </button>
+  );
+}
+
 function Header({
   audience,
   displayName,
   code,
-  avatarColor,
-  avatarEmoji,
+  me,
+  isHost,
 }: {
   audience: boolean;
   displayName: string;
   code: string;
-  avatarColor: string;
-  avatarEmoji: string;
+  me: PublicPlayer | null;
+  isHost: boolean;
 }) {
   return (
     <header className="flex items-center justify-between">
       <div className="flex min-w-0 items-center gap-3">
-        <div
-          className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-xl"
-          style={{ background: avatarColor }}
-          aria-hidden
-        >
-          {avatarEmoji}
-        </div>
+        {me ? (
+          <PlayerAvatar player={me} size="md" />
+        ) : (
+          <Avatar
+            player={{
+              avatarKind: "EMOJI",
+              avatarColor: "#ff4f7b",
+              avatarEmoji: "🎲",
+              avatarImage: null,
+            }}
+            size="md"
+          />
+        )}
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-widest text-mist/60">
-            {audience ? "Audience" : "Player"}
+            {isHost ? "Host" : audience ? "Audience" : "Player"}
           </div>
           <div className="truncate text-base font-semibold">{displayName}</div>
         </div>
@@ -112,15 +165,30 @@ function LobbyVoteCard({
   snapshot,
   audience,
   myPlayerId,
+  isHost,
 }: {
   snapshot: RoomSnapshot;
   audience: boolean;
   myPlayerId: string;
+  isHost: boolean;
 }) {
   const [busy, setBusy] = useState(false);
+  const [startBusy, setStartBusy] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
   const myVote = snapshot.playerGameVotes[myPlayerId] ?? null;
   const canVote = !audience;
   const totalVotes = Object.values(snapshot.gameVotes).reduce((a, b) => a + b, 0);
+  const corePlayerCount = snapshot.players.length;
+
+  function startMatch() {
+    if (startBusy) return;
+    setStartBusy(true);
+    setStartError(null);
+    getSocket().emit("host:startMatch", (res: ActionResult) => {
+      setStartBusy(false);
+      if (!res.ok) setStartError(res.reason);
+    });
+  }
 
   // Keep a stable sort (registry order) so the list doesn't jump around as
   // votes come in. Highlight the current leader at the top of the card.
@@ -210,11 +278,36 @@ function LobbyVoteCard({
           );
         })}
       </ul>
-      <p className="mt-4 text-xs text-mist/50">
-        {canVote
-          ? "Host starts the match when you're ready. Highest-voted game wins."
-          : "You'll be able to vote on answers during the match."}
-      </p>
+      {isHost ? (
+        <div className="mt-4 space-y-2">
+          <button
+            type="button"
+            onClick={startMatch}
+            disabled={startBusy || corePlayerCount === 0}
+            className="cc-btn-primary w-full py-4 text-base"
+          >
+            {startBusy
+              ? "Starting…"
+              : leader
+              ? `Start ${leader.name}`
+              : "Start match"}
+          </button>
+          {startError && (
+            <div role="alert" className="text-xs text-ember">
+              {startError}
+            </div>
+          )}
+          <p className="text-[10px] uppercase tracking-[0.25em] text-mist/50">
+            You&apos;re host — you start the match
+          </p>
+        </div>
+      ) : (
+        <p className="mt-4 text-xs text-mist/50">
+          {canVote
+            ? "Host starts the match when you're ready. Highest-voted game wins."
+            : "You'll be able to vote on answers during the match."}
+        </p>
+      )}
     </div>
   );
 }
@@ -1468,13 +1561,7 @@ function ScoreCard() {
           <li key={p.id} className="flex items-center justify-between rounded bg-white/5 p-2">
             <span className="flex items-center gap-2">
               <span className="w-4 text-center text-xs text-mist/50">{i + 1}</span>
-              <span
-                className="grid h-6 w-6 place-items-center rounded-full text-sm"
-                style={{ background: p.avatarColor }}
-                aria-hidden
-              >
-                {p.avatarEmoji}
-              </span>
+              <PlayerAvatar player={p} size="sm" />
               <span>{p.displayName}</span>
             </span>
             <span className="font-mono">{p.score}</span>
@@ -1493,12 +1580,8 @@ function EndCard() {
   return (
     <div className="cc-card p-6 text-center">
       {champ && (
-        <div
-          className="mx-auto grid h-20 w-20 place-items-center rounded-full text-3xl"
-          style={{ background: champ.avatarColor }}
-          aria-hidden
-        >
-          {champ.avatarEmoji}
+        <div className="mx-auto">
+          <PlayerAvatar player={champ} size="xl" />
         </div>
       )}
       <h3 className="mt-3 text-lg font-semibold">

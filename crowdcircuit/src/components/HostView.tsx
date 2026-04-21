@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useRoomStore } from "@/stores/useRoomStore";
 import { loadRemoteToken } from "@/lib/session";
 import { Countdown } from "./Countdown";
-import type { GameCard, RoomSnapshot } from "@/lib/types";
+import type { GameCard, PublicPlayer, RoomSnapshot } from "@/lib/types";
 import { DrawingView, tryParseDrawing } from "./DrawingView";
 import { BackgroundMusic } from "./BackgroundMusic";
+import { Avatar, PlayerAvatar } from "./Avatar";
 
 const accentToClass: Record<GameCard["accent"], { chip: string; heading: string; ring: string }> = {
   ember: { chip: "!bg-ember/20 !text-ember", heading: "text-ember", ring: "ring-ember/60" },
@@ -89,27 +90,34 @@ function Header({ streamerLean, compact }: { streamerLean: boolean; compact?: bo
 
 // ---------- Lobby (full-screen) ----------
 
-// The lobby fills the entire TV. Layout (top → bottom):
-//   1. Compact title bar — room code big enough to read across the room
-//   2. Horizontal game carousel — every game in the lineup, voted from the
-//      phones. Each card shows live vote count + a bar.
-//   3. Bottom strip — QR codes to join/host + connected player avatars.
+// The TV lobby is a waiting room — no game picker, no carousel, just the
+// people who've joined and a big room code + QR so more can hop in. Game
+// voting happens on phones; the TV just shows the current leader as a
+// small "Next up" label.
 function LobbyScreen({ snapshot }: { snapshot: RoomSnapshot }) {
   const leaderId = leadingGameId(snapshot);
+  const leader = snapshot.games.find((g) => g.id === leaderId) ?? null;
+  const totalVotes = Object.values(snapshot.gameVotes).reduce((a, b) => a + b, 0);
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
-      <LobbyTopBar snapshot={snapshot} leaderId={leaderId} />
+    <div className="flex h-full min-h-0 flex-col gap-5">
+      <LobbyHeader
+        code={snapshot.code}
+        playerCount={snapshot.players.length}
+        audienceCount={snapshot.audienceCount}
+        leader={leader}
+        totalVotes={totalVotes}
+      />
       <div className="min-h-0 flex-1">
-        <GameCarousel snapshot={snapshot} leaderId={leaderId} />
+        <PlayerRoster players={snapshot.players} />
       </div>
-      <LobbyBottomBar snapshot={snapshot} />
+      <LobbyFooter snapshot={snapshot} leader={leader} />
     </div>
   );
 }
 
 function leadingGameId(snapshot: RoomSnapshot): string {
   // Highest-voted game; if nobody's voted yet, fall back to whatever the
-  // room has selected (either the host's default or the last winner).
+  // room has selected (either the default or the last winner).
   let best = snapshot.selectedGameId;
   let bestCount = -1;
   for (const g of snapshot.games) {
@@ -122,188 +130,137 @@ function leadingGameId(snapshot: RoomSnapshot): string {
   return bestCount > 0 ? best : snapshot.selectedGameId;
 }
 
-function LobbyTopBar({
-  snapshot,
-  leaderId,
+function LobbyHeader({
+  code,
+  playerCount,
+  audienceCount,
+  leader,
+  totalVotes,
 }: {
-  snapshot: RoomSnapshot;
-  leaderId: string;
+  code: string;
+  playerCount: number;
+  audienceCount: number;
+  leader: GameCard | null;
+  totalVotes: number;
 }) {
-  const leader = snapshot.games.find((g) => g.id === leaderId);
-  const totalVotes = Object.values(snapshot.gameVotes).reduce((a, b) => a + b, 0);
   return (
     <header className="flex shrink-0 items-end justify-between gap-6">
       <div>
         <div className="cc-chip text-sm">CrowdCircuit</div>
         <div className="mt-2 text-xs uppercase tracking-[0.35em] text-mist/60">
-          Room code
+          Scan to join • Room
         </div>
-        <div className="cc-code text-6xl leading-none sm:text-7xl">{snapshot.code}</div>
+        <div className="cc-code text-7xl leading-none sm:text-8xl">{code}</div>
+        <div className="mt-2 text-sm text-mist/60">
+          {playerCount} player{playerCount === 1 ? "" : "s"}
+          {audienceCount > 0 && ` • ${audienceCount} audience`}
+        </div>
       </div>
       <div className="text-right">
         <div className="text-xs uppercase tracking-[0.3em] text-mist/60">
-          {totalVotes === 0 ? "Vote for the next game on your phone" : "Leading"}
+          {totalVotes === 0 ? "Next up" : "Vote leader"}
         </div>
-        <div className="mt-1 text-3xl font-semibold">
+        <div className="mt-1 max-w-xs truncate text-3xl font-semibold">
           {leader?.name ?? "—"}
         </div>
         <div className="text-sm text-mist/60">
-          {snapshot.players.length} in • {totalVotes} vote{totalVotes === 1 ? "" : "s"} cast
+          {totalVotes === 0
+            ? "Pick a game on your phone"
+            : `${totalVotes} vote${totalVotes === 1 ? "" : "s"} in`}
         </div>
       </div>
     </header>
   );
 }
 
-// Horizontal, mouse/touch-scrollable strip of game cards. Built to fit the
-// vertical space available — each card is `h-full` and the strip is sized
-// by the parent's flex-1 min-h-0 area.
-function GameCarousel({
-  snapshot,
-  leaderId,
-}: {
-  snapshot: RoomSnapshot;
-  leaderId: string;
-}) {
-  const scrollerRef = useRef<HTMLDivElement | null>(null);
-  // Auto-scroll the leader into view when the vote leader changes so the TV
-  // visibly reacts to the room's choices.
-  useEffect(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-    const target = scroller.querySelector<HTMLElement>(`[data-game-id="${leaderId}"]`);
-    if (!target) return;
-    target.scrollIntoView({
-      behavior: "smooth",
-      inline: "center",
-      block: "nearest",
-    });
-  }, [leaderId]);
-
-  const maxCount = useMemo(() => {
-    let max = 0;
-    for (const v of Object.values(snapshot.gameVotes)) if (v > max) max = v;
-    return Math.max(1, max);
-  }, [snapshot.gameVotes]);
-
+// Grid of player cards. Prioritizes the richer avatars (drawings and
+// selfies) — each card is big enough for a tiled photo or a readable
+// sketch. Auto-scales with player count so a party of 3 still fills the
+// screen without feeling empty.
+function PlayerRoster({ players }: { players: PublicPlayer[] }) {
+  if (players.length === 0) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center rounded-3xl border border-dashed border-white/15 bg-white/[0.02] text-center">
+        <div className="text-4xl">📡</div>
+        <div className="mt-3 text-xl font-semibold">Waiting for the first scan</div>
+        <p className="mt-1 max-w-md text-sm text-mist/60">
+          Scan the QR below to join. The first person in is the host — and
+          still plays.
+        </p>
+      </div>
+    );
+  }
+  // Dense grid; cards shrink gracefully as more people arrive.
   return (
-    <div
-      ref={scrollerRef}
-      className="flex h-full snap-x snap-mandatory gap-5 overflow-x-auto overflow-y-hidden pb-2 pr-2"
-      style={{ scrollbarWidth: "thin" }}
-    >
-      {snapshot.games.map((g) => {
-        const accent = accentToClass[g.accent];
-        const count = snapshot.gameVotes[g.id] ?? 0;
-        const isLeader = g.id === leaderId && count > 0;
-        const voterAvatars = snapshot.players
-          .filter((p) => snapshot.playerGameVotes[p.id] === g.id)
-          .slice(0, 6);
-        return (
-          <div
-            key={g.id}
-            data-game-id={g.id}
-            className={`group relative flex h-full w-[340px] shrink-0 snap-center flex-col rounded-3xl border bg-white/[0.03] p-6 transition ${
-              isLeader
-                ? `border-transparent bg-white/[0.06] ring-2 ${accent.ring} shadow-[0_0_40px_rgba(255,255,255,0.08)]`
-                : "border-white/10"
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <span className={`cc-chip ${accent.chip}`}>{g.flow}</span>
-              {isLeader && (
-                <span className="cc-chip !bg-white/15 !text-white">Leading</span>
-              )}
-            </div>
-            <h3 className={`mt-4 text-2xl font-semibold ${accent.heading}`}>
-              {g.name}
-            </h3>
-            <p className="mt-1 text-sm italic text-mist/70 line-clamp-2">
-              {g.tagline}
-            </p>
-            <p className="mt-3 text-xs text-mist/60 line-clamp-4">{g.description}</p>
-            <div className="mt-auto pt-4">
-              <div className="flex items-end justify-between">
-                <div>
-                  <div className="text-[10px] uppercase tracking-[0.25em] text-mist/50">
-                    Votes
-                  </div>
-                  <div className="text-3xl font-semibold tabular-nums">{count}</div>
-                </div>
-                {voterAvatars.length > 0 && (
-                  <div className="flex -space-x-2">
-                    {voterAvatars.map((p) => (
-                      <span
-                        key={p.id}
-                        className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-black/50 text-sm"
-                        style={{ background: p.avatarColor }}
-                        aria-label={`${p.displayName} voted`}
-                      >
-                        {p.avatarEmoji}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
-                <div
-                  className={`h-full rounded-full transition-[width] duration-500 ${
-                    isLeader ? "bg-white" : "bg-white/40"
-                  }`}
-                  style={{ width: `${(count / maxCount) * 100}%` }}
-                />
-              </div>
-            </div>
-          </div>
-        );
-      })}
+    <div className="grid h-full auto-rows-fr grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+      {players.map((p) => (
+        <PlayerCard key={p.id} player={p} />
+      ))}
     </div>
   );
 }
 
-function LobbyBottomBar({ snapshot }: { snapshot: RoomSnapshot }) {
+function PlayerCard({ player }: { player: PublicPlayer }) {
+  return (
+    <div
+      className={`relative flex flex-col items-center justify-between rounded-3xl border p-4 transition ${
+        player.connected
+          ? "border-white/10 bg-white/[0.04]"
+          : "border-white/5 bg-white/[0.02] opacity-60"
+      }`}
+    >
+      {player.isHost && (
+        <span className="absolute right-3 top-3 cc-chip !bg-neon/20 !text-neon">
+          HOST
+        </span>
+      )}
+      <div className="relative mt-3">
+        <PlayerAvatar player={player} size="xl" />
+        <span
+          className={`absolute bottom-1 right-1 h-3 w-3 rounded-full border-2 border-black ${
+            player.connected ? "bg-neon" : "bg-mist/40"
+          }`}
+          aria-hidden
+          title={player.connected ? "Connected" : "Disconnected"}
+        />
+      </div>
+      <div className="mt-3 min-w-0 truncate text-center text-base font-semibold">
+        {player.displayName}
+      </div>
+    </div>
+  );
+}
+
+function LobbyFooter({
+  snapshot,
+  leader,
+}: {
+  snapshot: RoomSnapshot;
+  leader: GameCard | null;
+}) {
+  const hostName = snapshot.players.find((p) => p.isHost)?.displayName ?? null;
   return (
     <footer className="flex shrink-0 items-center gap-5">
       <LobbyQrPair code={snapshot.code} />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col justify-center">
         <div className="text-[10px] uppercase tracking-[0.25em] text-mist/50">
-          In the room
+          How this works
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-1.5">
-          {snapshot.players.length === 0 ? (
-            <span className="text-sm text-mist/60">
-              Waiting for players — scan the QR to join.
-            </span>
+        <div className="mt-1 text-sm text-mist/70">
+          {hostName ? (
+            <>
+              <span className="font-semibold text-neon">{hostName}</span> is hosting
+              &mdash; they start the match from their phone when everyone&apos;s ready.
+            </>
           ) : (
-            snapshot.players.map((p) => (
-              <span
-                key={p.id}
-                className={`flex items-center gap-1.5 rounded-full px-2 py-1 text-xs ${
-                  p.connected ? "bg-white/10" : "bg-white/5 text-mist/60"
-                }`}
-                title={p.displayName}
-              >
-                <span
-                  className="grid h-5 w-5 place-items-center rounded-full text-[11px]"
-                  style={{ background: p.avatarColor }}
-                  aria-hidden
-                >
-                  {p.avatarEmoji}
-                </span>
-                <span className="max-w-[10ch] truncate">{p.displayName}</span>
-                {p.isHost && (
-                  <span className="text-[9px] uppercase tracking-widest text-neon">
-                    Host
-                  </span>
-                )}
-              </span>
-            ))
+            <>The first person to scan the QR becomes host and can start the match.</>
           )}
         </div>
-        <div className="mt-2 text-xs text-mist/50">
-          Host starts the match from their phone remote. The highest-voted game
-          wins.
-        </div>
+        {leader && (
+          <div className="mt-2 text-xs italic text-mist/60">
+            Leading vote: &ldquo;{leader.tagline}&rdquo;
+          </div>
+        )}
       </div>
     </footer>
   );
@@ -470,13 +427,7 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
               r.submittedPlayerIds.includes(p.id) ? "!bg-neon/20 !text-neon" : ""
             }`}
           >
-            <span
-              className="grid h-5 w-5 place-items-center rounded-full text-sm"
-              style={{ background: p.avatarColor }}
-              aria-hidden
-            >
-              {p.avatarEmoji}
-            </span>
+            <PlayerAvatar player={p} size="xs" />
             {p.displayName}
             {r.submittedPlayerIds.includes(p.id) ? " ✓" : " …"}
           </span>
@@ -1175,15 +1126,7 @@ function ScorePanel() {
                 className="flex items-center justify-between rounded-lg bg-white/5 p-3"
               >
                 <span className="flex items-center gap-3">
-                  {p && (
-                    <span
-                      className="grid h-7 w-7 place-items-center rounded-full text-base"
-                      style={{ background: p.avatarColor }}
-                      aria-hidden
-                    >
-                      {p.avatarEmoji}
-                    </span>
-                  )}
+                  {p && <PlayerAvatar player={p} size="sm" />}
                   <span className="font-medium">{s.name}</span>
                 </span>
                 <span className="font-mono text-neon">+{s.delta}</span>
@@ -1204,13 +1147,7 @@ function ScorePanel() {
             >
               <span className="flex items-center gap-3">
                 <span className="w-6 text-center text-sm text-mist/50">{i + 1}</span>
-                <span
-                  className="grid h-8 w-8 place-items-center rounded-full text-base"
-                  style={{ background: p.avatarColor }}
-                  aria-hidden
-                >
-                  {p.avatarEmoji}
-                </span>
+                <PlayerAvatar player={p} size="md" />
                 <span className="font-medium">{p.displayName}</span>
               </span>
               <span className="font-mono">{p.score}</span>
@@ -1237,14 +1174,10 @@ function MatchEndPanel() {
         </div>
         {champ && (
           <div
-            className="mx-auto mt-3 grid h-24 w-24 place-items-center rounded-full text-5xl animate-floaty"
-            style={{
-              background: champ.avatarColor,
-              boxShadow: `0 0 60px ${champ.avatarColor}80`,
-            }}
-            aria-hidden
+            className="mx-auto mt-3 animate-floaty rounded-full"
+            style={{ boxShadow: `0 0 60px ${champ.avatarColor}80` }}
           >
-            {champ.avatarEmoji}
+            <PlayerAvatar player={champ} size="2xl" />
           </div>
         )}
         <h2 className="mt-3 text-4xl font-semibold sm:text-5xl">
@@ -1268,13 +1201,15 @@ function MatchEndPanel() {
                     className="cc-card flex items-center gap-3 border-white/10 p-4 text-left animate-floaty"
                     style={{ animationDelay: `${i * 120}ms` }}
                   >
-                    <div
-                      className="grid h-12 w-12 shrink-0 place-items-center rounded-full text-2xl"
-                      style={{ background: h.avatarColor }}
-                      aria-hidden
-                    >
-                      {h.avatarEmoji}
-                    </div>
+                    <Avatar
+                      player={{
+                        avatarKind: "EMOJI",
+                        avatarColor: h.avatarColor,
+                        avatarEmoji: h.avatarEmoji,
+                        avatarImage: null,
+                      }}
+                      size="lg"
+                    />
                     <div className="min-w-0">
                       <div className="text-xs uppercase tracking-wider text-sol">
                         {h.title}
@@ -1297,13 +1232,7 @@ function MatchEndPanel() {
               >
                 <span className="flex items-center gap-3">
                   <span className="w-6 text-center text-sm text-mist/50">{i + 1}</span>
-                  <span
-                    className="grid h-7 w-7 place-items-center rounded-full text-base"
-                    style={{ background: p.avatarColor }}
-                    aria-hidden
-                  >
-                    {p.avatarEmoji}
-                  </span>
+                  <PlayerAvatar player={p} size="sm" />
                   <span>{p.displayName}</span>
                 </span>
                 <span className="font-mono">{p.score}</span>

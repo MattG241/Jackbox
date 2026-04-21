@@ -99,6 +99,14 @@ export function getRoomByCode(code: string): LiveRoom | undefined {
   return rooms.get(code);
 }
 
+// Prisma stores avatarKind as a free-form String column (the enum lives on
+// the client-side type union). Defensive cast so unexpected values from
+// older rows or future additions never leak through.
+function normalizeAvatarKind(raw: string | null): "EMOJI" | "DRAWING" | "PHOTO" {
+  if (raw === "DRAWING" || raw === "PHOTO") return raw;
+  return "EMOJI";
+}
+
 function parseRgb(raw: string): { r: number; g: number; b: number } {
   const parts = raw.split(",").map((p) => Number(p.trim()));
   if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n)))
@@ -204,6 +212,10 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
       isHost: p.id === room.hostPlayerId,
       avatarColor: p.avatarColor,
       avatarEmoji: p.avatarEmoji,
+      avatarKind: normalizeAvatarKind(
+        (p as { avatarKind?: string | null }).avatarKind ?? null
+      ),
+      avatarImage: (p as { avatarImage?: string | null }).avatarImage ?? null,
       score: scoreByPlayer.get(p.id) ?? 0,
     }));
 
