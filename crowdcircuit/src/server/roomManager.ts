@@ -20,7 +20,8 @@ import { clampDrawing } from "@/lib/drawing";
 // Constants — mirror the MVP defaults spelled out in the spec.
 export const DEFAULTS = {
   MAX_PLAYERS: 10,
-  MIN_PLAYERS: 3,
+  // Normally 3+, but allow solo so you can demo/playtest every game alone.
+  MIN_PLAYERS: 1,
   TOTAL_ROUNDS: 5,
   SUBMIT_SECONDS: 45,
   REVEAL_SECONDS: 8,
@@ -1515,7 +1516,14 @@ export async function playerVote(
   } else {
     const sub = await prisma.submission.findUnique({ where: { id: submissionId } });
     if (!sub || sub.roundId !== room.round.id) throw new Error("Invalid submission.");
-    if (sub.playerId === voterId) throw new Error("You can't vote for yourself.");
+    // Self-votes are normally blocked; allow them in solo test rooms so you
+    // can exercise take/chain/combo voting alone.
+    if (sub.playerId === voterId) {
+      const coreCount = await prisma.player.count({
+        where: { roomId: room.id, isAudience: false, connected: true },
+      });
+      if (coreCount > 1) throw new Error("You can't vote for yourself.");
+    }
     await prisma.vote.upsert({
       where: { roundId_voterId: { roundId: room.round.id, voterId } },
       update: { submissionId, forTruth: false, weight },

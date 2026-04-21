@@ -167,7 +167,7 @@ function LobbyPanel({
         <div className="cc-card p-6">
           <h3 className="text-lg font-semibold">Ready up</h3>
           <p className="mt-1 text-sm text-mist/70">
-            Need at least 3 players. Max 10. Unlimited audience.
+            Solo play enabled for testing. Normally 3+. Max 10. Unlimited audience.
           </p>
           {hostMode ? (
             <>

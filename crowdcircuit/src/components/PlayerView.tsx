@@ -1170,9 +1170,13 @@ function VoteCard({ game }: { game: GameCard | null }) {
     [round, myId]
   );
   const isFib = game?.scoring === "fib";
+  // Solo test mode: if you're the only real player, you can self-vote so
+  // the voting flow actually finishes.
+  const soloMode =
+    (snapshot?.players.filter((p) => !p.isAudience).length ?? 0) <= 1;
 
   function vote(submissionId: string | null, ownSubmission: boolean) {
-    if (ownSubmission) {
+    if (ownSubmission && !soloMode) {
       setError("You can't vote for your own answer.");
       return;
     }
@@ -1206,13 +1210,14 @@ function VoteCard({ game }: { game: GameCard | null }) {
             const submissionId = revealEntry?.submissionId ?? null;
             const authorId = revealEntry?.authorId ?? null;
             const mine = authorId && authorId === myId;
+            const blockSelf = !!mine && !soloMode;
             return (
               <button
                 key={submissionId ?? i}
-                disabled={busy || alreadyVoted || !!mine || !submissionId}
+                disabled={busy || alreadyVoted || blockSelf || !submissionId}
                 onClick={() => submissionId && vote(submissionId, !!mine)}
                 className={`w-full rounded-xl border p-3 text-left transition ${
-                  mine
+                  blockSelf
                     ? "border-white/5 bg-white/5 text-mist/50"
                     : "border-white/10 bg-white/5 hover:border-ember hover:bg-ember/10"
                 }`}
@@ -1253,13 +1258,14 @@ function VoteCard({ game }: { game: GameCard | null }) {
           {round.mashups.map((m) => {
             const icon = tryParseDrawing(m.iconText);
             const mine = m.iconAuthorId === myId || m.sloganAuthorId === myId;
+            const blockSelf = mine && !soloMode;
             return (
               <button
                 key={m.id}
-                disabled={busy || alreadyVoted || mine}
+                disabled={busy || alreadyVoted || blockSelf}
                 onClick={() => vote(m.id, mine)}
                 className={`w-full rounded-2xl border p-3 text-left transition ${
-                  mine
+                  blockSelf
                     ? "border-white/5 bg-white/5 text-mist/50"
                     : "border-white/10 bg-white/5 hover:border-sol hover:bg-sol/10"
                 }`}
@@ -1307,15 +1313,16 @@ function VoteCard({ game }: { game: GameCard | null }) {
       <div className="mt-4 grid gap-2">
         {round.reveal.map((item, i) => {
           const mine = item.authorId && item.authorId === myId;
+          const blockSelf = !!mine && !soloMode;
           const isDrawing = round.submissionKind === "DRAWING" && !item.isTruth;
           const drawing = isDrawing ? tryParseDrawing(item.text) : null;
           return (
             <button
               key={item.submissionId ?? `truth-${i}`}
-              disabled={busy || alreadyVoted || !!mine}
-              onClick={() => vote(item.submissionId, !!mine)}
+              disabled={busy || alreadyVoted || blockSelf}
+              onClick={() => vote(item.submissionId, blockSelf)}
               className={`w-full rounded-xl border p-3 text-left transition ${
-                mine
+                blockSelf
                   ? "border-white/5 bg-white/5 text-mist/50"
                   : "border-white/10 bg-white/5 hover:border-neon hover:bg-neon/10"
               }`}
