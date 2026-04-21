@@ -33,20 +33,23 @@ export function PlayerOrbit({ players }: { players: PublicPlayer[] }) {
   );
 
   // Ball radius scales with how many players are in the room so a crowd
-  // doesn't overflow the frame.
+  // doesn't overflow the frame. The target coverage is ~16% of the area
+  // so a party of 3–5 players gets chunky, readable avatars and a full
+  // 10 still breathes. We also cap at a fraction of the container's
+  // shortest side so a tall narrow panel doesn't blow up the balls.
   function targetRadius(count: number): number {
     const { w, h } = sizeRef.current;
-    if (!w || !h) return 56;
+    if (!w || !h) return 64;
     const area = w * h;
-    // Aim for roughly 10-14% of total area covered by balls.
-    const perBall = (area * 0.12) / Math.max(1, count);
-    const r = Math.sqrt(perBall / Math.PI);
-    return Math.min(96, Math.max(36, Math.round(r)));
+    const perBall = (area * 0.16) / Math.max(1, count);
+    const fromArea = Math.sqrt(perBall / Math.PI);
+    const fromSide = Math.min(w, h) * 0.22;
+    return Math.min(fromSide, Math.max(40, Math.round(Math.min(fromArea, 140))));
   }
 
   // Sync the ball set with the incoming player list. Preserve positions
   // and velocities for players that stayed; spawn fresh balls for new
-  // joiners at a safe spot.
+  // joiners at a safe, non-overlapping spot.
   useEffect(() => {
     const map = ballsRef.current;
     const radius = targetRadius(players.length);
@@ -58,21 +61,44 @@ export function PlayerOrbit({ players }: { players: PublicPlayer[] }) {
       if (!seenIds.has(id)) map.delete(id);
     }
 
-    // Resize existing balls + spawn new ones.
+    // Resize existing balls + spawn new ones. Rejection-sample a starting
+    // position so the new ball doesn't spawn inside an existing one — with
+    // a small retry cap so we never stall.
     for (const p of players) {
       const existing = map.get(p.id);
       if (existing) {
         existing.r = radius;
         continue;
       }
+      let x = radius;
+      let y = radius;
+      if (w && h) {
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const cx = radius + Math.random() * Math.max(0, w - 2 * radius);
+          const cy = radius + Math.random() * Math.max(0, h - 2 * radius);
+          let overlaps = false;
+          for (const other of map.values()) {
+            const dx = other.x - cx;
+            const dy = other.y - cy;
+            const minDist = other.r + radius + 4;
+            if (dx * dx + dy * dy < minDist * minDist) {
+              overlaps = true;
+              break;
+            }
+          }
+          x = cx;
+          y = cy;
+          if (!overlaps) break;
+        }
+      }
       const newBall: Ball = {
         id: p.id,
         r: radius,
-        x: w ? radius + Math.random() * (w - 2 * radius) : 100,
-        y: h ? radius + Math.random() * (h - 2 * radius) : 100,
-        // Slow drift — pixels per second.
-        vx: (Math.random() < 0.5 ? -1 : 1) * (25 + Math.random() * 30),
-        vy: (Math.random() < 0.5 ? -1 : 1) * (25 + Math.random() * 30),
+        x,
+        y,
+        // Slow drift — pixels per second. A bit livelier than before.
+        vx: (Math.random() < 0.5 ? -1 : 1) * (35 + Math.random() * 40),
+        vy: (Math.random() < 0.5 ? -1 : 1) * (35 + Math.random() * 40),
       };
       map.set(p.id, newBall);
     }

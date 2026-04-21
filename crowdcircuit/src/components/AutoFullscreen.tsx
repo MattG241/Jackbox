@@ -33,14 +33,6 @@ export function AutoFullscreen() {
     }
   }, []);
 
-  const exit = useCallback(async () => {
-    try {
-      if (document.fullscreenElement) await document.exitFullscreen();
-    } catch {
-      // Same as above — best effort.
-    }
-  }, []);
-
   // Arm a one-shot listener for the first user interaction. Entering
   // fullscreen on the first tap/keypress is the friendliest "default to
   // fullscreen" behaviour given the browser's gesture requirement.
@@ -59,17 +51,20 @@ export function AutoFullscreen() {
     return removeListeners;
   }, [enter, isFs, supported]);
 
-  if (!supported) return null;
+  // Once we're fullscreen the TV has a clean canvas — the pill is hidden.
+  // If the user presses Escape, `isFs` flips back to false and the pill
+  // reappears so they can tap to re-enter.
+  if (!supported || isFs) return null;
 
   return (
     <button
       type="button"
-      onClick={isFs ? exit : enter}
+      onClick={enter}
       className="fixed right-3 top-3 z-50 flex items-center gap-1.5 rounded-full border border-white/10 bg-black/60 px-3 py-1 text-[11px] uppercase tracking-[0.25em] text-mist/70 transition hover:bg-black/80"
-      aria-label={isFs ? "Exit fullscreen" : "Enter fullscreen"}
+      aria-label="Enter fullscreen"
     >
-      <span aria-hidden>{isFs ? "⤢" : "⛶"}</span>
-      <span>{isFs ? "Exit fullscreen" : "Tap for fullscreen"}</span>
+      <span aria-hidden>⛶</span>
+      <span>Tap for fullscreen</span>
     </button>
   );
 }

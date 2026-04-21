@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useRoomStore } from "@/stores/useRoomStore";
 import { Countdown } from "./Countdown";
-import type { GameCard, PublicPlayer, RoomSnapshot } from "@/lib/types";
+import type { GameCard, RoomSnapshot } from "@/lib/types";
 import { DrawingView, tryParseDrawing } from "./DrawingView";
 import { BackgroundMusic } from "./BackgroundMusic";
 import { Avatar, PlayerAvatar } from "./Avatar";
@@ -92,27 +92,24 @@ function Header({ streamerLean, compact }: { streamerLean: boolean; compact?: bo
 
 // ---------- Lobby (full-screen) ----------
 
-// The TV lobby is a waiting room — no game picker, no carousel, just the
-// people who've joined and a big room code + QR so more can hop in. Game
-// voting happens on phones; the TV just shows the current leader as a
-// small "Next up" label.
+// The TV lobby is a split layout: a fixed-width sidebar on the left with
+// the room code, QR, and vote status, and the rest of the screen on the
+// right handed to the bouncing avatar orbit. Game voting happens on
+// phones; the TV only shows who's in and the current vote leader.
 function LobbyScreen({ snapshot }: { snapshot: RoomSnapshot }) {
   const leaderId = leadingGameId(snapshot);
   const leader = snapshot.games.find((g) => g.id === leaderId) ?? null;
   const totalVotes = Object.values(snapshot.gameVotes).reduce((a, b) => a + b, 0);
   return (
-    <div className="flex h-full min-h-0 flex-col gap-5">
-      <LobbyHeader
-        code={snapshot.code}
-        playerCount={snapshot.players.length}
-        audienceCount={snapshot.audienceCount}
+    <div className="flex h-full min-h-0 gap-6">
+      <LobbySidebar
+        snapshot={snapshot}
         leader={leader}
         totalVotes={totalVotes}
       />
-      <div className="min-h-0 flex-1">
+      <div className="min-h-0 min-w-0 flex-1">
         <PlayerOrbit players={snapshot.players} />
       </div>
-      <LobbyFooter snapshot={snapshot} leader={leader} />
     </div>
   );
 }
@@ -132,139 +129,62 @@ function leadingGameId(snapshot: RoomSnapshot): string {
   return bestCount > 0 ? best : snapshot.selectedGameId;
 }
 
-function LobbyHeader({
-  code,
-  playerCount,
-  audienceCount,
+// Left-hand sidebar: brand chip, room code, join QR, who's hosting, and
+// the current vote leader. Sized so it stays out of the orbit's way even
+// on 1280-wide displays.
+function LobbySidebar({
+  snapshot,
   leader,
   totalVotes,
 }: {
-  code: string;
-  playerCount: number;
-  audienceCount: number;
+  snapshot: RoomSnapshot;
   leader: GameCard | null;
   totalVotes: number;
 }) {
+  const hostName = snapshot.players.find((p) => p.isHost)?.displayName ?? null;
   return (
-    <header className="flex shrink-0 items-end justify-between gap-6">
+    <aside className="flex w-[340px] shrink-0 flex-col gap-5 xl:w-[400px]">
       <div>
         <div className="cc-chip text-sm">CrowdCircuit</div>
-        <div className="mt-2 text-xs uppercase tracking-[0.35em] text-mist/60">
+        <div className="mt-2 text-[11px] uppercase tracking-[0.35em] text-mist/60">
           Scan to join • Room
         </div>
-        <div className="cc-code text-7xl leading-none sm:text-8xl">{code}</div>
+        <div className="cc-code text-7xl leading-none xl:text-8xl">
+          {snapshot.code}
+        </div>
         <div className="mt-2 text-sm text-mist/60">
-          {playerCount} player{playerCount === 1 ? "" : "s"}
-          {audienceCount > 0 && ` • ${audienceCount} audience`}
+          {snapshot.players.length} player{snapshot.players.length === 1 ? "" : "s"}
+          {snapshot.audienceCount > 0 && ` • ${snapshot.audienceCount} audience`}
         </div>
       </div>
-      <div className="text-right">
-        <div className="text-xs uppercase tracking-[0.3em] text-mist/60">
+
+      <LobbyJoinQr code={snapshot.code} />
+
+      <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+        <div className="text-[10px] uppercase tracking-[0.3em] text-mist/60">
           {totalVotes === 0 ? "Next up" : "Vote leader"}
         </div>
-        <div className="mt-1 max-w-xs truncate text-3xl font-semibold">
+        <div className="mt-1 truncate text-2xl font-semibold">
           {leader?.name ?? "—"}
         </div>
-        <div className="text-sm text-mist/60">
+        <div className="mt-0.5 text-sm text-mist/60">
           {totalVotes === 0
             ? "Pick a game on your phone"
             : `${totalVotes} vote${totalVotes === 1 ? "" : "s"} in`}
         </div>
       </div>
-    </header>
-  );
-}
 
-// Grid of player cards. Prioritizes the richer avatars (drawings and
-// selfies) — each card is big enough for a tiled photo or a readable
-// sketch. Auto-scales with player count so a party of 3 still fills the
-// screen without feeling empty.
-function PlayerRoster({ players }: { players: PublicPlayer[] }) {
-  if (players.length === 0) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center rounded-3xl border border-dashed border-white/15 bg-white/[0.02] text-center">
-        <div className="text-4xl">📡</div>
-        <div className="mt-3 text-xl font-semibold">Waiting for the first scan</div>
-        <p className="mt-1 max-w-md text-sm text-mist/60">
-          Scan the QR below to join. The first person in is the host — and
-          still plays.
-        </p>
-      </div>
-    );
-  }
-  // Dense grid; cards shrink gracefully as more people arrive.
-  return (
-    <div className="grid h-full auto-rows-fr grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-      {players.map((p) => (
-        <PlayerCard key={p.id} player={p} />
-      ))}
-    </div>
-  );
-}
-
-function PlayerCard({ player }: { player: PublicPlayer }) {
-  return (
-    <div
-      className={`relative flex flex-col items-center justify-between rounded-3xl border p-4 transition ${
-        player.connected
-          ? "border-white/10 bg-white/[0.04]"
-          : "border-white/5 bg-white/[0.02] opacity-60"
-      }`}
-    >
-      {player.isHost && (
-        <span className="absolute right-3 top-3 cc-chip !bg-neon/20 !text-neon">
-          HOST
-        </span>
-      )}
-      <div className="relative mt-3">
-        <PlayerAvatar player={player} size="xl" />
-        <span
-          className={`absolute bottom-1 right-1 h-3 w-3 rounded-full border-2 border-black ${
-            player.connected ? "bg-neon" : "bg-mist/40"
-          }`}
-          aria-hidden
-          title={player.connected ? "Connected" : "Disconnected"}
-        />
-      </div>
-      <div className="mt-3 min-w-0 truncate text-center text-base font-semibold">
-        {player.displayName}
-      </div>
-    </div>
-  );
-}
-
-function LobbyFooter({
-  snapshot,
-  leader,
-}: {
-  snapshot: RoomSnapshot;
-  leader: GameCard | null;
-}) {
-  const hostName = snapshot.players.find((p) => p.isHost)?.displayName ?? null;
-  return (
-    <footer className="flex shrink-0 items-center gap-5">
-      <LobbyJoinQr code={snapshot.code} />
-      <div className="flex min-w-0 flex-1 flex-col justify-center">
-        <div className="text-[10px] uppercase tracking-[0.25em] text-mist/50">
-          How this works
-        </div>
-        <div className="mt-1 text-sm text-mist/70">
-          {hostName ? (
-            <>
-              <span className="font-semibold text-neon">{hostName}</span> is hosting
-              &mdash; they start the match from their phone when everyone&apos;s ready.
-            </>
-          ) : (
-            <>The first person to scan the QR becomes host and can start the match.</>
-          )}
-        </div>
-        {leader && (
-          <div className="mt-2 text-xs italic text-mist/60">
-            Leading vote: &ldquo;{leader.tagline}&rdquo;
-          </div>
+      <div className="mt-auto text-sm text-mist/70">
+        {hostName ? (
+          <>
+            <span className="font-semibold text-neon">{hostName}</span> is
+            hosting — they start the match from their phone.
+          </>
+        ) : (
+          <>First scan becomes host and can start the match.</>
         )}
       </div>
-    </footer>
+    </aside>
   );
 }
 
