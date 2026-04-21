@@ -216,70 +216,59 @@ function LobbyVoteCard({
     getSocket().emit("player:voteGame", payload, () => setBusy(false));
   }
 
+  const topVoteCount = Math.max(
+    1,
+    ...snapshot.games.map((g) => snapshot.gameVotes[g.id] ?? 0)
+  );
+
   return (
-    <div className="cc-card p-5">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">
-          {canVote ? "Vote for the next game" : "Waiting in the audience"}
-        </h2>
-        <span className="text-xs text-mist/50">
-          {totalVotes} vote{totalVotes === 1 ? "" : "s"}
-        </span>
-      </div>
-      {leader ? (
-        <div className="mt-3 rounded-xl border border-white/10 bg-white/5 p-3">
-          <div className="text-[10px] uppercase tracking-widest text-mist/60">
-            Leading
+    <div className="flex flex-col gap-3">
+      <div className="cc-card flex items-center justify-between px-4 py-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.3em] text-mist/60">
+            {canVote ? "Pick a game" : "Audience"}
           </div>
-          <div className="mt-0.5 font-semibold">{leader.name}</div>
-          <div className="text-xs italic text-mist/70">{leader.tagline}</div>
+          <div className="text-lg font-semibold">
+            {canVote
+              ? "Tap to vote — tap again to unvote"
+              : "Players are picking the next game"}
+          </div>
         </div>
-      ) : (
-        <p className="mt-2 text-sm text-mist/70">
-          {canVote
-            ? "Tap a game to vote. Tap again to unvote."
-            : "Players are picking the next game on their phones."}
-        </p>
-      )}
-      <ul className="mt-4 grid gap-2">
+        <div className="text-right">
+          <div className="text-[10px] uppercase tracking-[0.25em] text-mist/60">
+            Votes
+          </div>
+          <div className="font-mono text-xl tabular-nums">{totalVotes}</div>
+        </div>
+      </div>
+
+      <ul className="grid gap-2.5">
         {snapshot.games.map((g) => {
           const count = snapshot.gameVotes[g.id] ?? 0;
           const mine = myVote === g.id;
+          const isLeader = leader?.id === g.id && count > 0;
+          const voters = snapshot.players
+            .filter((p) => snapshot.playerGameVotes[p.id] === g.id)
+            .slice(0, 4);
           return (
             <li key={g.id}>
-              <button
-                type="button"
-                onClick={() => vote(g.id)}
+              <VoteButton
+                game={g}
+                count={count}
+                mine={mine}
+                leading={isLeader}
+                pct={count / topVoteCount}
+                voters={voters}
                 disabled={!canVote || busy}
-                className={`w-full rounded-xl border p-3 text-left transition active:scale-[0.99] ${
-                  mine
-                    ? "border-ember bg-ember/10 shadow-[0_0_16px_rgba(255,79,123,0.25)]"
-                    : "border-white/10 bg-white/[0.03] hover:border-white/30"
-                } ${!canVote ? "opacity-60" : ""}`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate font-semibold">{g.name}</div>
-                    <div className="truncate text-xs italic text-mist/60">
-                      {g.tagline}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    {mine && (
-                      <span className="cc-chip !bg-ember/20 !text-ember">You</span>
-                    )}
-                    <span className="cc-chip min-w-[2ch] justify-center tabular-nums">
-                      {count}
-                    </span>
-                  </div>
-                </div>
-              </button>
+                onClick={() => vote(g.id)}
+              />
             </li>
           );
         })}
       </ul>
+
       {isHost ? (
-        <div className="mt-4 space-y-2">
+        <div className="cc-card sticky bottom-2 space-y-2 p-4">
           <button
             type="button"
             onClick={startMatch}
@@ -297,18 +286,141 @@ function LobbyVoteCard({
               {startError}
             </div>
           )}
-          <p className="text-[10px] uppercase tracking-[0.25em] text-mist/50">
-            You&apos;re host — you start the match
+          <p className="text-center text-[10px] uppercase tracking-[0.25em] text-mist/50">
+            Host • highest-voted game wins
           </p>
         </div>
       ) : (
-        <p className="mt-4 text-xs text-mist/50">
+        <p className="text-center text-xs text-mist/50">
           {canVote
-            ? "Host starts the match when you're ready. Highest-voted game wins."
-            : "You'll be able to vote on answers during the match."}
+            ? "Host starts when you're all in. Top vote wins."
+            : "You'll vote on answers during the match."}
         </p>
       )}
     </div>
+  );
+}
+
+// A single game's vote button in the phone lobby. Rich card styled with
+// the game's accent color, a tap-to-vote affordance, a vote bar that
+// scales relative to the room's top-voted game, and mini voter pips.
+const VOTE_ACCENT: Record<
+  GameCard["accent"],
+  { ring: string; text: string; bar: string; bg: string }
+> = {
+  ember: {
+    ring: "ring-ember",
+    text: "text-ember",
+    bar: "bg-ember",
+    bg: "from-ember/20 to-transparent",
+  },
+  neon: {
+    ring: "ring-neon",
+    text: "text-neon",
+    bar: "bg-neon",
+    bg: "from-neon/20 to-transparent",
+  },
+  sol: {
+    ring: "ring-sol",
+    text: "text-sol",
+    bar: "bg-sol",
+    bg: "from-sol/20 to-transparent",
+  },
+  orchid: {
+    ring: "ring-orchid",
+    text: "text-orchid",
+    bar: "bg-orchid",
+    bg: "from-orchid/20 to-transparent",
+  },
+};
+
+function VoteButton({
+  game,
+  count,
+  mine,
+  leading,
+  pct,
+  voters,
+  disabled,
+  onClick,
+}: {
+  game: GameCard;
+  count: number;
+  mine: boolean;
+  leading: boolean;
+  pct: number;
+  voters: PublicPlayer[];
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const accent = VOTE_ACCENT[game.accent];
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={mine}
+      className={`relative w-full overflow-hidden rounded-2xl border p-4 text-left transition active:scale-[0.99] disabled:opacity-60 ${
+        mine
+          ? `border-transparent bg-gradient-to-r ${accent.bg} ring-2 ${accent.ring} shadow-[0_0_24px_rgba(255,255,255,0.08)]`
+          : "border-white/10 bg-white/[0.03] hover:border-white/30"
+      }`}
+    >
+      {/* Vote progress bar sits behind everything, hugging the bottom. */}
+      <span
+        aria-hidden
+        className={`pointer-events-none absolute inset-x-0 bottom-0 h-[3px] ${accent.bar} opacity-60 transition-[width] duration-500`}
+        style={{ width: `${Math.max(0, Math.min(1, pct)) * 100}%` }}
+      />
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className={`text-lg font-semibold ${accent.text}`}>
+              {game.name}
+            </span>
+            {leading && (
+              <span className="cc-chip !bg-white/15 !text-white text-[10px]">
+                Leading
+              </span>
+            )}
+          </div>
+          <div className="mt-0.5 text-xs italic text-mist/70">
+            {game.tagline}
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span
+            className={`grid h-10 min-w-[2.5rem] place-items-center rounded-xl px-2 text-lg font-semibold tabular-nums ${
+              mine
+                ? `bg-white/15 ${accent.text}`
+                : count > 0
+                ? "bg-white/10 text-mist"
+                : "bg-white/5 text-mist/40"
+            }`}
+          >
+            {count}
+          </span>
+          {mine && (
+            <span className="text-[10px] uppercase tracking-widest text-mist">
+              Your pick ✓
+            </span>
+          )}
+        </div>
+      </div>
+      {voters.length > 0 && (
+        <div className="mt-3 flex -space-x-2">
+          {voters.map((p) => (
+            <span
+              key={p.id}
+              className="inline-block rounded-full border-2 border-black/60"
+              aria-label={`${p.displayName} voted`}
+            >
+              <PlayerAvatar player={p} size="xs" rounded />
+            </span>
+          ))}
+        </div>
+      )}
+    </button>
   );
 }
 

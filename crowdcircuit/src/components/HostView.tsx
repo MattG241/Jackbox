@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useRoomStore } from "@/stores/useRoomStore";
-import { loadRemoteToken } from "@/lib/session";
 import { Countdown } from "./Countdown";
 import type { GameCard, PublicPlayer, RoomSnapshot } from "@/lib/types";
 import { DrawingView, tryParseDrawing } from "./DrawingView";
@@ -241,7 +240,7 @@ function LobbyFooter({
   const hostName = snapshot.players.find((p) => p.isHost)?.displayName ?? null;
   return (
     <footer className="flex shrink-0 items-center gap-5">
-      <LobbyQrPair code={snapshot.code} />
+      <LobbyJoinQr code={snapshot.code} />
       <div className="flex min-w-0 flex-1 flex-col justify-center">
         <div className="text-[10px] uppercase tracking-[0.25em] text-mist/50">
           How this works
@@ -266,50 +265,25 @@ function LobbyFooter({
   );
 }
 
-// Side-by-side QR codes shown in the lobby — one for players, one for the
-// host's phone-as-remote. The remote token lives in localStorage on the TV,
-// written there when the room was first created. Kept compact so the QR
-// strip fits in the lobby footer without crowding the game carousel.
-function LobbyQrPair({ code }: { code: string }) {
+// Single "Scan to play" QR — the only way into the room. The first phone
+// to scan and finish the inline join becomes the host automatically. We
+// intentionally dropped the second "Host remote" QR: the host controls
+// live on the host player's phone already, no paired-remote step needed.
+function LobbyJoinQr({ code }: { code: string }) {
   const [origin, setOrigin] = useState<string | null>(null);
-  const [remoteToken, setRemoteToken] = useState<string | null>(null);
   useEffect(() => {
     if (typeof window === "undefined") return;
     setOrigin(window.location.origin);
-    setRemoteToken(loadRemoteToken(code));
-  }, [code]);
+  }, []);
   if (!origin) return null;
   const joinUrl = `${origin}/play/${code}`;
-  const remoteUrl = remoteToken
-    ? `${origin}/remote/${code}?t=${encodeURIComponent(remoteToken)}`
-    : null;
   return (
-    <div className="flex shrink-0 items-center gap-3">
-      <QrTile accent="neon" label="Scan to play" url={joinUrl} />
-      {remoteUrl && <QrTile accent="ember" label="Host remote" url={remoteUrl} />}
-    </div>
-  );
-}
-
-function QrTile({
-  accent,
-  label,
-  url,
-}: {
-  accent: "neon" | "ember";
-  label: string;
-  url: string;
-}) {
-  const ring =
-    accent === "ember" ? "ring-ember/50" : "ring-neon/50";
-  const heading = accent === "ember" ? "text-ember" : "text-neon";
-  return (
-    <div className={`flex flex-col items-center rounded-2xl bg-white/5 p-2 ring-1 ${ring}`}>
-      <div className="rounded-lg bg-white p-1.5">
-        <QRCodeSVG value={url} size={96} level="M" includeMargin={false} />
+    <div className="flex shrink-0 flex-col items-center gap-2 rounded-2xl bg-white/[0.04] p-4 ring-1 ring-neon/40">
+      <div className="rounded-xl bg-white p-2">
+        <QRCodeSVG value={joinUrl} size={148} level="M" includeMargin={false} />
       </div>
-      <div className={`mt-1 text-[10px] uppercase tracking-[0.25em] ${heading}`}>
-        {label}
+      <div className="text-[11px] uppercase tracking-[0.3em] text-neon">
+        Scan to play
       </div>
     </div>
   );
