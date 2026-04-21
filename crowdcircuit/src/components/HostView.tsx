@@ -8,6 +8,8 @@ import type { GameCard, PublicPlayer, RoomSnapshot } from "@/lib/types";
 import { DrawingView, tryParseDrawing } from "./DrawingView";
 import { BackgroundMusic } from "./BackgroundMusic";
 import { Avatar, PlayerAvatar } from "./Avatar";
+import { PlayerOrbit } from "./PlayerOrbit";
+import { AutoFullscreen } from "./AutoFullscreen";
 
 const accentToClass: Record<GameCard["accent"], { chip: string; heading: string; ring: string }> = {
   ember: { chip: "!bg-ember/20 !text-ember", heading: "text-ember", ring: "ring-ember/60" },
@@ -37,6 +39,7 @@ export function HostView() {
   return (
     <main className="flex h-[100dvh] w-full flex-col overflow-hidden bg-gradient-to-br from-black via-[#0b0314] to-black">
       <BackgroundMusic />
+      <AutoFullscreen />
       <div className="flex min-h-0 flex-1 flex-col gap-4 px-8 py-6 xl:px-12 xl:py-8">
         {snapshot.phase === "LOBBY" ? (
           <LobbyScreen snapshot={snapshot} />
@@ -107,7 +110,7 @@ function LobbyScreen({ snapshot }: { snapshot: RoomSnapshot }) {
         totalVotes={totalVotes}
       />
       <div className="min-h-0 flex-1">
-        <PlayerRoster players={snapshot.players} />
+        <PlayerOrbit players={snapshot.players} />
       </div>
       <LobbyFooter snapshot={snapshot} leader={leader} />
     </div>

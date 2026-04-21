@@ -22,86 +22,167 @@ export interface AvatarDraft {
   image: string | null;
 }
 
-// Dog / cat / party accessories. Each filter is a list of overlay layers
-// positioned on a 100×100 grid relative to a centered face. Emojis are a
-// pragmatic shortcut — they render at consistent sizes cross-platform and
-// don't require bundling any image assets.
-interface Overlay {
-  emoji: string;
-  /** Center x% of the face box. */
-  x: number;
-  /** Center y% of the face box. */
-  y: number;
-  size: number; // em
-  rotate?: number;
-}
-
+// Face filters are vector overlays in a shared 100×100 viewBox, positioned
+// over the roughly centered face in the camera preview. We ship the SVG
+// inline so the overlays stay crisp at any size, don't depend on
+// platform-specific emoji fonts, and can be rasterised onto the capture
+// canvas at full resolution by encoding them into a data: URL and drawing
+// them like any other image.
 interface FaceFilter {
   id: string;
   label: string;
-  overlays: Overlay[];
-  /** Optional CSS filter applied to the captured photo. */
+  /** Inner SVG markup in a 100×100 viewBox. Empty string = no overlay. */
+  svg: string;
+  /** CSS filter applied to the video (preview) and baked into capture. */
   cssFilter?: string;
 }
 
 const FACE_FILTERS: FaceFilter[] = [
-  { id: "none", label: "Plain", overlays: [] },
+  { id: "none", label: "Plain", svg: "" },
   {
     id: "dog",
-    label: "Dog",
-    overlays: [
-      { emoji: "🐶", x: 20, y: 10, size: 3.2, rotate: -18 },
-      { emoji: "🐶", x: 80, y: 10, size: 3.2, rotate: 18 },
-      { emoji: "👃", x: 50, y: 58, size: 2.2 },
-      { emoji: "👅", x: 50, y: 78, size: 2.2 },
-    ],
+    label: "Puppy",
+    svg: `
+      <path d="M 15 8 Q 6 18 10 38 Q 14 50 24 46 Q 30 35 28 18 Q 24 8 15 8 Z" fill="#8d5a2b" stroke="#3e2513" stroke-width="1.2"/>
+      <path d="M 17 14 Q 12 22 15 34 Q 19 42 23 40" fill="none" stroke="#b57848" stroke-width="1.5" opacity="0.5"/>
+      <path d="M 85 8 Q 94 18 90 38 Q 86 50 76 46 Q 70 35 72 18 Q 76 8 85 8 Z" fill="#8d5a2b" stroke="#3e2513" stroke-width="1.2"/>
+      <path d="M 83 14 Q 88 22 85 34 Q 81 42 77 40" fill="none" stroke="#b57848" stroke-width="1.5" opacity="0.5"/>
+      <ellipse cx="50" cy="58" rx="7" ry="5" fill="#0f0f0f"/>
+      <ellipse cx="47" cy="55.5" rx="2" ry="1.2" fill="#ffffff" opacity="0.6"/>
+      <path d="M 43 70 Q 50 82 57 70 Q 56 80 50 85 Q 44 80 43 70 Z" fill="#ff6a88" stroke="#b23c5a" stroke-width="0.7"/>
+      <line x1="50" y1="74" x2="50" y2="82" stroke="#b23c5a" stroke-width="0.6" opacity="0.5"/>
+    `,
+    cssFilter: "contrast(1.05) saturate(1.1)",
   },
   {
     id: "cat",
     label: "Cat",
-    overlays: [
-      { emoji: "🐱", x: 22, y: 8, size: 2.6, rotate: -20 },
-      { emoji: "🐱", x: 78, y: 8, size: 2.6, rotate: 20 },
-      { emoji: "🐾", x: 30, y: 62, size: 1.3 },
-      { emoji: "🐾", x: 70, y: 62, size: 1.3 },
-    ],
+    svg: `
+      <path d="M 14 4 L 30 24 L 8 22 Z" fill="#3b3b3b" stroke="#0d0d0d" stroke-width="1"/>
+      <path d="M 17 9 L 26 21 L 14 20 Z" fill="#ffb0a8"/>
+      <path d="M 86 4 L 70 24 L 92 22 Z" fill="#3b3b3b" stroke="#0d0d0d" stroke-width="1"/>
+      <path d="M 83 9 L 74 21 L 86 20 Z" fill="#ffb0a8"/>
+      <path d="M 46 50 L 54 50 L 50 55 Z" fill="#ff6a88" stroke="#b23c5a" stroke-width="0.6"/>
+      <line x1="12" y1="57" x2="42" y2="55" stroke="#ffffff" stroke-width="0.9" stroke-linecap="round"/>
+      <line x1="12" y1="60" x2="42" y2="58" stroke="#ffffff" stroke-width="0.9" stroke-linecap="round"/>
+      <line x1="12" y1="63" x2="42" y2="61" stroke="#ffffff" stroke-width="0.9" stroke-linecap="round"/>
+      <line x1="58" y1="55" x2="88" y2="57" stroke="#ffffff" stroke-width="0.9" stroke-linecap="round"/>
+      <line x1="58" y1="58" x2="88" y2="60" stroke="#ffffff" stroke-width="0.9" stroke-linecap="round"/>
+      <line x1="58" y1="61" x2="88" y2="63" stroke="#ffffff" stroke-width="0.9" stroke-linecap="round"/>
+    `,
   },
   {
     id: "bunny",
     label: "Bunny",
-    overlays: [
-      { emoji: "🐰", x: 25, y: 2, size: 3.4, rotate: -8 },
-      { emoji: "🐰", x: 75, y: 2, size: 3.4, rotate: 8 },
-    ],
+    svg: `
+      <g transform="rotate(-8 32 16)">
+        <ellipse cx="32" cy="16" rx="6" ry="15" fill="#f1eeee" stroke="#9b9b9b" stroke-width="0.8"/>
+        <ellipse cx="32" cy="16" rx="3" ry="11" fill="#ffb9c8"/>
+      </g>
+      <g transform="rotate(8 68 16)">
+        <ellipse cx="68" cy="16" rx="6" ry="15" fill="#f1eeee" stroke="#9b9b9b" stroke-width="0.8"/>
+        <ellipse cx="68" cy="16" rx="3" ry="11" fill="#ffb9c8"/>
+      </g>
+      <ellipse cx="50" cy="54" rx="4" ry="3" fill="#ff6a88" stroke="#b23c5a" stroke-width="0.5"/>
+    `,
   },
   {
     id: "shades",
     label: "Shades",
-    overlays: [{ emoji: "🕶️", x: 50, y: 40, size: 4.5 }],
-    cssFilter: "contrast(1.1) saturate(1.2)",
-  },
-  {
-    id: "clown",
-    label: "Clown",
-    overlays: [
-      { emoji: "🤡", x: 50, y: 58, size: 2.6 },
-      { emoji: "🎈", x: 15, y: 20, size: 2 },
-      { emoji: "🎈", x: 85, y: 20, size: 2 },
-    ],
+    svg: `
+      <rect x="20" y="38" width="24" height="14" rx="6" fill="#0a0a0a" stroke="#1a1a1a" stroke-width="1"/>
+      <rect x="56" y="38" width="24" height="14" rx="6" fill="#0a0a0a" stroke="#1a1a1a" stroke-width="1"/>
+      <line x1="44" y1="44" x2="56" y2="44" stroke="#0a0a0a" stroke-width="2.5" stroke-linecap="round"/>
+      <line x1="24" y1="41" x2="32" y2="41" stroke="#ffffff" stroke-width="1.5" opacity="0.7"/>
+      <line x1="60" y1="41" x2="68" y2="41" stroke="#ffffff" stroke-width="1.5" opacity="0.7"/>
+    `,
+    cssFilter: "contrast(1.15) saturate(1.25)",
   },
   {
     id: "crown",
     label: "Royalty",
-    overlays: [{ emoji: "👑", x: 50, y: 5, size: 3.5 }],
-    cssFilter: "sepia(0.25) saturate(1.3)",
+    svg: `
+      <path d="M 20 30 L 30 15 L 40 30 L 50 10 L 60 30 L 70 15 L 80 30 L 80 37 L 20 37 Z" fill="#f9c950" stroke="#8b5a10" stroke-width="1.2"/>
+      <rect x="20" y="34" width="60" height="4" fill="#d99c2b" stroke="#8b5a10" stroke-width="0.8"/>
+      <circle cx="30" cy="30" r="2" fill="#ff4f7b" stroke="#7a1b2e" stroke-width="0.5"/>
+      <circle cx="50" cy="26" r="2.5" fill="#6fb3ff" stroke="#1a4e85" stroke-width="0.5"/>
+      <circle cx="70" cy="30" r="2" fill="#7cf8d0" stroke="#1a7a5f" stroke-width="0.5"/>
+      <circle cx="48" cy="24.5" r="0.8" fill="#ffffff" opacity="0.9"/>
+    `,
+    cssFilter: "sepia(0.3) saturate(1.35) brightness(1.04)",
+  },
+  {
+    id: "clown",
+    label: "Clown",
+    svg: `
+      <circle cx="18" cy="22" r="11" fill="#ff4f7b"/>
+      <circle cx="30" cy="11" r="11" fill="#ffd36e"/>
+      <circle cx="42" cy="6" r="11" fill="#7cf8d0"/>
+      <circle cx="58" cy="6" r="11" fill="#6fb3ff"/>
+      <circle cx="70" cy="11" r="11" fill="#b080ff"/>
+      <circle cx="82" cy="22" r="11" fill="#ff8a5b"/>
+      <circle cx="50" cy="58" r="6.5" fill="#ff2a3d" stroke="#7a0e18" stroke-width="1"/>
+      <circle cx="48" cy="56" r="1.8" fill="#ffffff" opacity="0.7"/>
+    `,
+  },
+  {
+    id: "wizard",
+    label: "Wizard",
+    svg: `
+      <path d="M 50 0 L 22 36 L 78 36 Z" fill="#4a2e8a" stroke="#1a0a3a" stroke-width="1"/>
+      <path d="M 40 18 l 1.3 4 l 4 0 l -3.3 2.5 l 1.3 4 l -3.3 -2.5 l -3.3 2.5 l 1.3 -4 l -3.3 -2.5 l 4 0 z" fill="#ffd36e"/>
+      <path d="M 60 9 l 1 3 l 3 0 l -2.5 2 l 1 3 l -2.5 -2 l -2.5 2 l 1 -3 l -2.5 -2 l 3 0 z" fill="#ffd36e" opacity="0.9"/>
+      <ellipse cx="50" cy="38" rx="30" ry="4" fill="#4a2e8a" stroke="#1a0a3a" stroke-width="1"/>
+      <path d="M 28 70 Q 32 100 50 100 Q 68 100 72 70 Q 62 92 50 93 Q 38 92 28 70 Z" fill="#f4f4f4" stroke="#cccccc" stroke-width="0.8"/>
+    `,
+    cssFilter: "saturate(1.15) hue-rotate(-10deg)",
   },
   {
     id: "alien",
     label: "Alien",
-    overlays: [{ emoji: "👽", x: 50, y: 50, size: 6 }],
-    cssFilter: "hue-rotate(200deg) saturate(1.6)",
+    svg: `
+      <ellipse cx="32" cy="48" rx="9" ry="14" fill="#050505"/>
+      <ellipse cx="28" cy="42" rx="2.8" ry="4.5" fill="#ffffff" opacity="0.6"/>
+      <ellipse cx="68" cy="48" rx="9" ry="14" fill="#050505"/>
+      <ellipse cx="64" cy="42" rx="2.8" ry="4.5" fill="#ffffff" opacity="0.6"/>
+      <line x1="42" y1="12" x2="38" y2="2" stroke="#94f08a" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="38" cy="1.5" r="2.2" fill="#94f08a"/>
+      <line x1="58" y1="12" x2="62" y2="2" stroke="#94f08a" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="62" cy="1.5" r="2.2" fill="#94f08a"/>
+    `,
+    cssFilter: "hue-rotate(110deg) saturate(1.8) contrast(1.1)",
+  },
+  {
+    id: "retro",
+    label: "Retro",
+    svg: "",
+    cssFilter: "sepia(0.45) contrast(1.15) saturate(0.85) brightness(1.02)",
+  },
+  {
+    id: "noir",
+    label: "Noir",
+    svg: "",
+    cssFilter: "grayscale(1) contrast(1.35) brightness(0.94)",
   },
 ];
+
+// Turn an SVG fragment into a data: URL the browser can load as an image.
+// Used at capture time to rasterise overlays onto the photo canvas.
+function svgDataUrl(inner: string, size = 256): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="${size}" height="${size}">${inner}</svg>`;
+  // encodeURIComponent keeps things safe for `#`, `<`, spaces, etc.
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+// Load an image from a data URL, resolving once it's decoded.
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = (e) => reject(e);
+    img.src = src;
+  });
+}
 
 type Tab = "emoji" | "draw" | "photo";
 
@@ -386,7 +467,7 @@ function PhotoTab({
     }
   }, [state, stopStream]);
 
-  function capture() {
+  async function capture() {
     const video = videoRef.current;
     if (!video || video.videoWidth === 0) return;
     const size = 256;
@@ -401,7 +482,6 @@ function PhotoTab({
     ctx.save();
     ctx.translate(size, 0);
     ctx.scale(-1, 1);
-
     // Cover-fit the square: crop the central portion of the (often wider)
     // camera frame.
     const vw = video.videoWidth;
@@ -416,23 +496,19 @@ function PhotoTab({
     ctx.restore();
     ctx.filter = "none";
 
-    // Overlay pass — draw the emojis on top using the same layout as the
-    // live preview. Unmirrored here so the emoji orientation is correct.
-    for (const o of filter.overlays) {
-      ctx.save();
-      const px = (o.x / 100) * size;
-      const py = (o.y / 100) * size;
-      ctx.translate(px, py);
-      if (o.rotate) ctx.rotate((o.rotate * Math.PI) / 180);
-      const fontPx = o.size * 16; // 1em ≈ 16px
-      ctx.font = `${fontPx}px system-ui, "Apple Color Emoji", "Segoe UI Emoji"`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(o.emoji, 0, 0);
-      ctx.restore();
+    // Rasterise the SVG overlay and draw it on top, unmirrored, at full
+    // resolution. Skipped when the filter is a pure CSS effect (e.g.
+    // Plain, Retro, Noir) and has nothing to overlay.
+    if (filter.svg && filter.svg.trim().length > 0) {
+      try {
+        const img = await loadImage(svgDataUrl(filter.svg, size));
+        ctx.drawImage(img, 0, 0, size, size);
+      } catch (err) {
+        console.warn("Overlay rasterisation failed:", err);
+      }
     }
 
-    const url = canvas.toDataURL("image/jpeg", 0.72);
+    const url = canvas.toDataURL("image/jpeg", 0.78);
     setCapturedUrl(url);
     onSave(url);
     stopStream();
@@ -476,24 +552,18 @@ function PhotoTab({
                 filter: filter.cssFilter,
               }}
             />
-            {/* Overlay emojis positioned on a 100×100 face grid. */}
-            <div className="pointer-events-none absolute inset-0">
-              {filter.overlays.map((o, i) => (
-                <span
-                  key={i}
-                  className="absolute"
-                  style={{
-                    left: `${o.x}%`,
-                    top: `${o.y}%`,
-                    transform: `translate(-50%, -50%) rotate(${o.rotate ?? 0}deg)`,
-                    fontSize: `${o.size}em`,
-                    lineHeight: 1,
-                  }}
-                >
-                  {o.emoji}
-                </span>
-              ))}
-            </div>
+            {/* SVG overlay positioned in the same 100×100 face grid used
+                during capture. When the filter has no overlay (Plain /
+                Retro / Noir) we skip rendering this layer entirely. */}
+            {filter.svg && (
+              <svg
+                viewBox="0 0 100 100"
+                preserveAspectRatio="xMidYMid meet"
+                className="pointer-events-none absolute inset-0 h-full w-full"
+                aria-hidden
+                dangerouslySetInnerHTML={{ __html: filter.svg }}
+              />
+            )}
             {state === "requesting" && (
               <div className="absolute inset-0 grid place-items-center bg-black/60 text-sm text-mist/80">
                 Waking up the camera…
