@@ -25,15 +25,28 @@ export function HostTvButton({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ hostIsAudience: true }),
       });
-      const json = await res.json();
-      if (!res.ok) {
-        setError(typeof json.error === "string" ? json.error : "Couldn't start TV lobby.");
+      const text = await res.text();
+      let json: { code?: string; session?: unknown; error?: unknown } = {};
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        // Non-JSON response (usually an HTML error page from the server).
+        setError(
+          `Server returned ${res.status}. ${text.slice(0, 160) || "Empty response."}`
+        );
         return;
       }
-      saveSession(json.session);
+      if (!res.ok) {
+        const reason =
+          typeof json.error === "string" ? json.error : `Request failed (${res.status}).`;
+        setError(reason);
+        return;
+      }
+      saveSession(json.session as never);
       router.push(`/host/${json.code}`);
-    } catch {
-      setError("Network error. Try again.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Network error.";
+      setError(`Network error: ${msg}`);
     } finally {
       setBusy(false);
     }

@@ -12,6 +12,20 @@ const tokenGen = customAlphabet(
 
 // POST /api/rooms — creates a room and returns the host session.
 export async function POST(req: NextRequest) {
+  try {
+    return await createRoom(req);
+  } catch (err) {
+    console.error("POST /api/rooms failed:", err);
+    const message =
+      err instanceof Error ? err.message : "Internal error creating room.";
+    return NextResponse.json(
+      { error: `Server error: ${message}` },
+      { status: 500 }
+    );
+  }
+}
+
+async function createRoom(req: NextRequest) {
   let body: unknown;
   try {
     body = await req.json();
