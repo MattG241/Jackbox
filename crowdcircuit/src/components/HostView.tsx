@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { useRoomStore } from "@/stores/useRoomStore";
 import { getSocket } from "@/lib/socketClient";
 import { Countdown } from "./Countdown";
@@ -82,6 +83,7 @@ function Header({ streamerLean }: { streamerLean: boolean }) {
   const { snapshot } = useRoomStore();
   if (!snapshot) return null;
   const game = currentGame(snapshot);
+  const inLobby = snapshot.status === "LOBBY";
   return (
     <header className="flex flex-col items-center gap-2 text-center">
       {!streamerLean && (
@@ -95,7 +97,33 @@ function Header({ streamerLean }: { streamerLean: boolean }) {
         {snapshot.players.length} player{snapshot.players.length === 1 ? "" : "s"} •{" "}
         {snapshot.audienceCount} in audience
       </div>
+      {inLobby && <JoinQr code={snapshot.code} />}
     </header>
+  );
+}
+
+function JoinQr({ code }: { code: string }) {
+  const [joinUrl, setJoinUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setJoinUrl(`${window.location.origin}/play/${code}`);
+  }, [code]);
+  if (!joinUrl) return null;
+  return (
+    <div className="mt-3 flex items-center gap-5 rounded-2xl border border-white/10 bg-white/5 p-4">
+      <div className="rounded-xl bg-white p-2.5">
+        <QRCodeSVG value={joinUrl} size={128} level="M" includeMargin={false} />
+      </div>
+      <div className="text-left">
+        <div className="text-xs uppercase tracking-[0.3em] text-mist/60">
+          Scan to join
+        </div>
+        <div className="mt-1 font-mono text-sm text-mist/90 break-all">
+          {joinUrl.replace(/^https?:\/\//, "")}
+        </div>
+        <div className="mt-1 text-xs text-mist/60">or open the site and enter {code}</div>
+      </div>
+    </div>
   );
 }
 
