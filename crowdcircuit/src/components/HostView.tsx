@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRoomStore } from "@/stores/useRoomStore";
 import { getSocket } from "@/lib/socketClient";
 import { Countdown } from "./Countdown";
@@ -266,6 +266,21 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
   const isDrawing = r.submissionKind === "DRAWING";
   const isPercent = game?.scoring === "percent";
   const isHerd = game?.scoring === "herd";
+  const isTrace = game?.scoring === "trace";
+  const isColor = game?.scoring === "color";
+  const isMultiStage = (r.totalStages ?? 1) > 1;
+  const stageLabel =
+    isMultiStage && game?.id === "stroke-of-genius"
+      ? r.stage === 0
+        ? "Stage 1 • Seed phrase"
+        : r.stage === 1
+        ? "Stage 2 • Draw the phrase"
+        : "Stage 3 • Guess the drawing"
+      : isMultiStage && game?.id === "mash-up-doodle"
+      ? r.stage === 0
+        ? "Stage 1 • Icon"
+        : "Stage 2 • Slogan"
+      : null;
 
   const isFinalRound = r.number === r.total;
   return (
@@ -284,12 +299,21 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
         </span>
         <Countdown endsAt={r.phaseEndsAt} />
       </div>
+      {stageLabel && (
+        <div className="mt-3 inline-block rounded-full border border-white/10 bg-white/5 px-4 py-1 text-xs uppercase tracking-widest text-mist/70">
+          {stageLabel}
+        </div>
+      )}
       <h2 className={`mt-4 text-3xl font-semibold sm:text-5xl ${accent?.heading ?? ""}`}>
-        {r.prompt}
+        {isColor ? r.prompt : r.prompt}
       </h2>
       {r.promptDetail && (
         <p className="mt-2 text-lg text-mist/70">{r.promptDetail}</p>
       )}
+      {isColor && r.truth && (
+        <TargetColorSwatch colorCsv={r.truth} />
+      )}
+      {isTrace && r.prompt && <TraceGuidePreview name={r.prompt} />}
       <p className="mt-4 text-mist/60">
         {isTap
           ? "Phones are the race track. Tap everything that pops."
@@ -297,8 +321,22 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
           ? "Slide to your best guess. Closest to the real number wins."
           : isHerd
           ? "Type the first word the room would agree on. Match the herd, bank the points."
+          : isTrace
+          ? "Trace the shape on your phone. Accuracy × speed."
+          : isColor
+          ? "Dial R, G, B on your phone until your swatch matches the target."
           : isQuiz
           ? "Pick your answer and set your wager."
+          : game?.flow === "chain"
+          ? r.stage === 0
+            ? "Write a short, vivid seed phrase."
+            : r.stage === 1
+            ? "Draw the phrase a teammate just handed you."
+            : "Guess what the previous drawing was trying to say."
+          : game?.flow === "combo"
+          ? r.stage === 0
+            ? "Draw an icon for the mash-up."
+            : "Write a snappy slogan — we'll pair it with someone else's icon."
           : isDrawing
           ? "Draw on your phone. Pixel quality not required."
           : game?.scoring === "fib"
@@ -307,7 +345,7 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
           ? "Take out your phones. The criterion drops at voting time."
           : `Write the ${game?.name.toLowerCase()}.`}
       </p>
-      {isQuiz && !isPercent && !isHerd && r.choices && (
+      {isQuiz && !isPercent && !isHerd && !isColor && r.choices && (
         <ul className="mx-auto mt-6 grid max-w-2xl gap-2 sm:grid-cols-2">
           {r.choices.map((c, i) => (
             <li
@@ -346,6 +384,117 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
   );
 }
 
+function TargetColorSwatch({ colorCsv }: { colorCsv: string }) {
+  const [r, g, b] = colorCsv
+    .split(",")
+    .map((s) => Math.max(0, Math.min(255, Math.round(Number(s)))));
+  return (
+    <div className="mx-auto mt-6 flex w-full max-w-md flex-col items-center">
+      <div className="text-xs uppercase tracking-widest text-mist/60">Target color</div>
+      <div
+        className="mt-2 h-32 w-full rounded-2xl border border-white/10 shadow-[0_0_40px_rgba(255,255,255,0.1)]"
+        style={{ background: `rgb(${r},${g},${b})` }}
+        aria-label="Target color swatch"
+      />
+    </div>
+  );
+}
+
+// Show the guide curve shape on the TV so everyone knows what's being traced.
+function TraceGuidePreview({ name }: { name: string }) {
+  const guides: Record<string, string> = {
+    Spiral:
+      (() => {
+        let d = "";
+        for (let i = 0; i <= 59; i++) {
+          const t = i / 59;
+          const angle = t * Math.PI * 4;
+          const radius = 6 + t * 36;
+          const x = 50 + Math.cos(angle) * radius;
+          const y = 50 + Math.sin(angle) * radius;
+          d += `${i === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)} `;
+        }
+        return d.trim();
+      })(),
+    Star: (() => {
+      let d = "";
+      const outer = 42,
+        inner = 18;
+      for (let i = 0; i <= 10; i++) {
+        const a = (i * Math.PI) / 5 - Math.PI / 2;
+        const r = i % 2 === 0 ? outer : inner;
+        const x = 50 + Math.cos(a) * r;
+        const y = 50 + Math.sin(a) * r;
+        d += `${i === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)} `;
+      }
+      return d.trim();
+    })(),
+    Wave: (() => {
+      let d = "";
+      for (let i = 0; i <= 59; i++) {
+        const t = i / 59;
+        const x = 8 + t * 84;
+        const y = 50 + Math.sin(t * Math.PI * 3) * 26;
+        d += `${i === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)} `;
+      }
+      return d.trim();
+    })(),
+    Heart: (() => {
+      let d = "";
+      for (let i = 0; i <= 59; i++) {
+        const t = (i / 59) * Math.PI * 2;
+        const xo = 16 * Math.pow(Math.sin(t), 3);
+        const yo =
+          13 * Math.cos(t) -
+          5 * Math.cos(2 * t) -
+          2 * Math.cos(3 * t) -
+          Math.cos(4 * t);
+        const x = 50 + xo * 2.2;
+        const y = 50 - yo * 2.2;
+        d += `${i === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)} `;
+      }
+      return d.trim();
+    })(),
+    Lightning:
+      "M55 8 L28 45 L48 48 L30 92 L72 44 L52 44 L62 12",
+    "Loop-the-loop": (() => {
+      let d = "";
+      for (let i = 0; i < 30; i++) {
+        const t = i / 29;
+        const x = 18 + t * 30;
+        const y = 32 + Math.sin(t * Math.PI * 2) * 18;
+        d += `${i === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)} `;
+      }
+      for (let i = 0; i < 30; i++) {
+        const t = i / 29;
+        const x = 52 + t * 30;
+        const y = 68 + Math.sin(t * Math.PI * 2) * 18;
+        d += `L${x.toFixed(2)} ${y.toFixed(2)} `;
+      }
+      return d.trim();
+    })(),
+  };
+  const d = guides[name] ?? guides.Wave;
+  return (
+    <div className="mx-auto mt-6 w-full max-w-sm">
+      <div className="text-xs uppercase tracking-widest text-mist/60">Trace this shape</div>
+      <div className="mt-2 aspect-square w-full rounded-2xl border border-white/10 bg-gradient-to-br from-neon/10 via-black to-sol/10 p-2">
+        <svg viewBox="0 0 100 100" className="h-full w-full">
+          <path
+            d={d}
+            stroke="#7cf8d0"
+            strokeWidth={2.4}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            fill="none"
+            strokeDasharray="3 2"
+          />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 function RevealPanel({ game }: { game: GameCard | null }) {
   const { snapshot } = useRoomStore();
   if (!snapshot?.round) return null;
@@ -354,6 +503,71 @@ function RevealPanel({ game }: { game: GameCard | null }) {
   const isDrawing = r.submissionKind === "DRAWING";
   const isPercent = game?.scoring === "percent";
   const isHerd = game?.scoring === "herd";
+  const isColor = game?.scoring === "color";
+
+  if (game?.flow === "chain" && r.chains) {
+    return <ChainRevealPanel chains={r.chains} roundNumber={r.number} gameName={game.name} />;
+  }
+
+  if (game?.flow === "combo" && r.mashups) {
+    return <MashupRevealPanel mashups={r.mashups} roundNumber={r.number} gameName={game.name} />;
+  }
+
+  if (isColor) {
+    const [tr, tg, tb] = (r.truth ?? "0,0,0")
+      .split(",")
+      .map((s) => Math.max(0, Math.min(255, Math.round(Number(s)))));
+    return (
+      <section className="cc-card mx-auto w-full max-w-5xl p-10 text-center">
+        <div className="text-sm text-mist/60">
+          {game?.name} • Round {r.number}
+        </div>
+        <h2 className="mt-2 text-2xl font-semibold sm:text-3xl">{r.prompt}</h2>
+        <div className="mx-auto mt-6 grid max-w-3xl gap-4 sm:grid-cols-2">
+          <div className="cc-card border-orchid/40 bg-orchid/10 p-4">
+            <div className="text-xs uppercase tracking-widest text-orchid">Target</div>
+            <div
+              className="mt-2 h-40 w-full rounded-xl border border-white/10"
+              style={{ background: `rgb(${tr},${tg},${tb})` }}
+            />
+          </div>
+          <div className="cc-card p-4">
+            <div className="text-xs uppercase tracking-widest text-mist/60">Players' picks</div>
+            <div className="mt-2 grid grid-cols-4 gap-2">
+              {r.reveal.map((item, i) => {
+                let pr = 0,
+                  pg = 0,
+                  pb = 0;
+                try {
+                  const parsed = JSON.parse(item.text);
+                  pr = Number(parsed?.r) || 0;
+                  pg = Number(parsed?.g) || 0;
+                  pb = Number(parsed?.b) || 0;
+                } catch {
+                  // zeros
+                }
+                const dr = pr - tr;
+                const dg = pg - tg;
+                const db = pb - tb;
+                const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+                const close = dist <= 25;
+                return (
+                  <div
+                    key={item.submissionId ?? i}
+                    className={`aspect-square rounded-lg border ${
+                      close ? "border-neon shadow-[0_0_24px_rgba(124,248,208,0.6)]" : "border-white/10"
+                    }`}
+                    style={{ background: `rgb(${pr},${pg},${pb})` }}
+                    title={close ? "Bullseye" : `Off by ${Math.round(dist)}`}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   if (isPercent) {
     const truthNum = Number(r.truth ?? "0");
@@ -530,6 +744,151 @@ function RevealPanel({ game }: { game: GameCard | null }) {
   );
 }
 
+// Animated reveal of one chain at a time for Stroke of Genius.
+function ChainRevealPanel({
+  chains,
+  roundNumber,
+  gameName,
+}: {
+  chains: import("@/lib/types").ChainReveal[];
+  roundNumber: number;
+  gameName: string;
+}) {
+  const [chainIdx, setChainIdx] = useState(0);
+  const [entryIdx, setEntryIdx] = useState(0);
+
+  // Cycle through each chain's entries on a timer. ~3.5s per entry, then
+  // pause and move to next chain.
+  useEffect(() => {
+    setChainIdx(0);
+    setEntryIdx(0);
+  }, [chains.length]);
+
+  useEffect(() => {
+    if (!chains.length) return;
+    const chain = chains[chainIdx];
+    if (!chain) return;
+    const timeout = setTimeout(() => {
+      if (entryIdx + 1 < chain.entries.length) {
+        setEntryIdx(entryIdx + 1);
+      } else if (chainIdx + 1 < chains.length) {
+        setChainIdx(chainIdx + 1);
+        setEntryIdx(0);
+      }
+    }, 3400);
+    return () => clearTimeout(timeout);
+  }, [chains, chainIdx, entryIdx]);
+
+  if (!chains.length) {
+    return (
+      <section className="cc-card mx-auto w-full max-w-5xl p-10 text-center">
+        <p className="text-mist/60">No chains completed this round.</p>
+      </section>
+    );
+  }
+  const chain = chains[chainIdx];
+  return (
+    <section className="cc-card mx-auto w-full max-w-5xl p-10">
+      <div className="text-center text-sm text-mist/60">
+        {gameName} • Round {roundNumber}
+      </div>
+      <h2 className="mt-2 text-center text-2xl font-semibold sm:text-3xl">
+        Chain {chainIdx + 1} of {chains.length}
+      </h2>
+      <div className="mt-1 text-center text-xs uppercase tracking-widest text-mist/50">
+        Started by {chain.originPlayerName}
+      </div>
+      <ul className="mx-auto mt-8 flex max-w-3xl flex-col gap-4">
+        {chain.entries.slice(0, entryIdx + 1).map((e, i) => {
+          const drawing = e.kind === "DRAWING" ? tryParseDrawing(e.text) : null;
+          return (
+            <li
+              key={i}
+              className="cc-card flex items-start gap-4 border-white/10 p-4 animate-floaty"
+            >
+              <div
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-lg"
+                style={{ background: e.avatarColor }}
+                aria-hidden
+              >
+                {e.avatarEmoji}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs uppercase tracking-widest text-mist/50">
+                  {i === 0 ? "Seed" : e.kind === "DRAWING" ? "Drew it" : "Guessed it"} •{" "}
+                  {e.playerName}
+                </div>
+                {drawing ? (
+                  <div className="mt-2 max-w-sm">
+                    <DrawingView drawing={drawing} />
+                  </div>
+                ) : (
+                  <div className="mt-1 text-xl font-semibold">&ldquo;{e.text}&rdquo;</div>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function MashupRevealPanel({
+  mashups,
+  roundNumber,
+  gameName,
+}: {
+  mashups: import("@/lib/types").MashupReveal[];
+  roundNumber: number;
+  gameName: string;
+}) {
+  if (!mashups.length) {
+    return (
+      <section className="cc-card mx-auto w-full max-w-5xl p-10 text-center">
+        <p className="text-mist/60">No mash-ups this round.</p>
+      </section>
+    );
+  }
+  return (
+    <section className="cc-card mx-auto w-full max-w-5xl p-8">
+      <div className="text-center text-sm text-mist/60">
+        {gameName} • Round {roundNumber}
+      </div>
+      <h2 className="mt-2 text-center text-2xl font-semibold sm:text-3xl">
+        The drop
+      </h2>
+      <p className="mt-1 text-center text-xs uppercase tracking-widest text-mist/50">
+        Random icon × slogan
+      </p>
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {mashups.map((m, i) => {
+          const icon = tryParseDrawing(m.iconText);
+          return (
+            <div
+              key={m.id}
+              className="cc-card border-white/10 p-4 animate-floaty"
+              style={{ animationDelay: `${i * 140}ms` }}
+            >
+              {icon && (
+                <div className="mx-auto max-w-[220px]">
+                  <DrawingView drawing={icon} />
+                </div>
+              )}
+              <div className="mt-3 text-center text-lg font-semibold">
+                &ldquo;{m.sloganText}&rdquo;
+              </div>
+              <div className="mt-2 text-center text-xs text-mist/50">
+                Icon {m.iconAuthorName} • Slogan {m.sloganAuthorName}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function parsePercentGuess(text: string): number {
   try {
     const parsed = JSON.parse(text);
@@ -546,6 +905,92 @@ function VotePanel({ game }: { game: GameCard | null }) {
   if (!snapshot?.round) return null;
   const r = snapshot.round;
   const isFib = game?.scoring === "fib";
+
+  if (game?.flow === "chain" && r.chains) {
+    return (
+      <section className="cc-card mx-auto w-full max-w-5xl p-10">
+        <div className="flex items-center justify-between text-sm text-mist/60">
+          <span>
+            {game?.name} • Round {r.number} • Vote for the funniest chain
+          </span>
+          <Countdown endsAt={r.phaseEndsAt} />
+        </div>
+        <div className="mt-6 grid gap-4 sm:grid-cols-2">
+          {r.chains.map((c, i) => (
+            <div
+              key={i}
+              className="cc-card border-white/10 p-4"
+            >
+              <div className="text-xs uppercase tracking-widest text-mist/50">
+                Chain {i + 1} • {c.originPlayerName}
+              </div>
+              <ul className="mt-2 flex flex-col gap-2">
+                {c.entries.map((e, j) => {
+                  const drawing =
+                    e.kind === "DRAWING" ? tryParseDrawing(e.text) : null;
+                  return (
+                    <li key={j} className="flex items-start gap-2 text-sm">
+                      <span
+                        className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-xs"
+                        style={{ background: e.avatarColor }}
+                        aria-hidden
+                      >
+                        {e.avatarEmoji}
+                      </span>
+                      {drawing ? (
+                        <div className="max-w-[160px]">
+                          <DrawingView drawing={drawing} />
+                        </div>
+                      ) : (
+                        <span>&ldquo;{e.text}&rdquo;</span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 text-sm text-mist/60">
+          {r.votedVoterIds.length} vote{r.votedVoterIds.length === 1 ? "" : "s"} cast.
+        </p>
+      </section>
+    );
+  }
+
+  if (game?.flow === "combo" && r.mashups) {
+    return (
+      <section className="cc-card mx-auto w-full max-w-5xl p-10">
+        <div className="flex items-center justify-between text-sm text-mist/60">
+          <span>
+            {game?.name} • Round {r.number} • Pick the winning mash-up
+          </span>
+          <Countdown endsAt={r.phaseEndsAt} />
+        </div>
+        <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {r.mashups.map((m) => {
+            const icon = tryParseDrawing(m.iconText);
+            return (
+              <div key={m.id} className="cc-card border-white/10 p-4">
+                {icon && (
+                  <div className="mx-auto max-w-[220px]">
+                    <DrawingView drawing={icon} />
+                  </div>
+                )}
+                <div className="mt-3 text-center text-base font-semibold">
+                  &ldquo;{m.sloganText}&rdquo;
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <p className="mt-4 text-sm text-mist/60">
+          {r.votedVoterIds.length} vote{r.votedVoterIds.length === 1 ? "" : "s"} cast.
+        </p>
+      </section>
+    );
+  }
+
   return (
     <section className="cc-card mx-auto w-full max-w-5xl p-10">
       <div className="flex items-center justify-between text-sm text-mist/60">

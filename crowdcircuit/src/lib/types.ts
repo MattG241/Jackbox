@@ -34,9 +34,74 @@ export interface RevealItem {
   isTruth: boolean;
 }
 
-export type GameFlow = "standard" | "quiz" | "reaction";
-export type GameSubmissionKind = "TEXT" | "DRAWING" | "QUIZ" | "TAP" | "PERCENT";
-export type GameScoring = "take" | "fib" | "quiz" | "reaction" | "percent" | "herd";
+// Per-stage target sent to each player in multi-stage games. The server builds
+// this as a map keyed by playerId; the client filters to its own entry.
+export interface PlayerStageTarget {
+  // What to submit this stage.
+  kind: GameSubmissionKind;
+  // For DRAWING stages the text is the prompt to draw; for TEXT stages
+  // it's either a previous drawing (stringified) to caption, or a phrase
+  // to continue from.
+  prompt: string | null;
+  // For chain games: the kind of the target content being shown (if any).
+  inputKind: GameSubmissionKind | null;
+  // For chain games: the content the player is responding to (e.g. the
+  // drawing they need to caption). Null if there's nothing to display.
+  inputText: string | null;
+  fromPlayerName: string | null;
+}
+
+// Animated chain reveal for Stroke of Genius. Each chain is one origin
+// player's seed phrase, followed by a drawing, followed by a guess, etc.
+export interface ChainRevealEntry {
+  kind: GameSubmissionKind;
+  text: string;
+  playerName: string;
+  avatarColor: string;
+  avatarEmoji: string;
+}
+export interface ChainReveal {
+  originPlayerName: string;
+  entries: ChainRevealEntry[];
+}
+
+// Mash-Up Doodle: icon author's submission paired with another player's
+// slogan. The `id` is the icon submission id (used as the vote target).
+export interface MashupReveal {
+  id: string;
+  iconText: string;
+  iconAuthorId: string;
+  iconAuthorName: string;
+  sloganText: string;
+  sloganAuthorId: string;
+  sloganAuthorName: string;
+}
+
+// standard : SUBMIT -> REVEAL -> VOTE -> SCORE
+// quiz     : SUBMIT -> REVEAL -> SCORE (no voting, truth-based scoring)
+// reaction : SUBMIT -> SCORE (real-time)
+// chain    : multi-stage SUBMIT* -> REVEAL -> VOTE -> SCORE (telephone)
+// combo    : multi-stage SUBMIT* -> REVEAL -> VOTE -> SCORE (mash-up pairings)
+export type GameFlow = "standard" | "quiz" | "reaction" | "chain" | "combo";
+export type GameSubmissionKind =
+  | "TEXT"
+  | "DRAWING"
+  | "QUIZ"
+  | "TAP"
+  | "PERCENT"
+  | "TRACE"
+  | "COLOR";
+export type GameScoring =
+  | "take"
+  | "fib"
+  | "quiz"
+  | "reaction"
+  | "percent"
+  | "herd"
+  | "trace"
+  | "color"
+  | "chain"
+  | "combo";
 
 export interface GameCard {
   id: string;
@@ -85,6 +150,16 @@ export interface RoomSnapshot {
     reveal: RevealItem[]; // populated during REVEAL/VOTE/SCORE
     votedVoterIds: string[];
     roundSummary: { playerId: string; name: string; delta: number }[] | null;
+    // Multi-stage games: 0-indexed current stage + total stages.
+    stage: number;
+    totalStages: number;
+    // Per-player target for the current SUBMIT stage (chain/combo games).
+    // Keyed by playerId so clients self-select.
+    playerTargets: Record<string, PlayerStageTarget> | null;
+    // Stroke of Genius reveal payload.
+    chains: ChainReveal[] | null;
+    // Mash-Up Doodle reveal payload.
+    mashups: MashupReveal[] | null;
   } | null;
 }
 

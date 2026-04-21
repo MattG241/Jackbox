@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRoomStore } from "@/stores/useRoomStore";
 import { getSocket } from "@/lib/socketClient";
 import { Countdown } from "./Countdown";
-import type { GameCard } from "@/lib/types";
+import type { GameCard, PlayerStageTarget } from "@/lib/types";
 import { Canvas } from "./Canvas";
 import { DrawingView, tryParseDrawing } from "./DrawingView";
 import { emptyDrawing, isDrawingNonTrivial, type Drawing } from "@/lib/drawing";
@@ -42,12 +42,16 @@ export function PlayerView() {
       {snapshot.phase === "REVEAL" && (
         <WaitingCard text="Answers are being revealed on the big screen." />
       )}
-      {snapshot.phase === "VOTE" && game?.flow === "standard" && (
-        <VoteCard game={game} />
-      )}
-      {snapshot.phase === "VOTE" && game?.flow !== "standard" && (
-        <WaitingCard text="Scores are coming up on the big screen." />
-      )}
+      {snapshot.phase === "VOTE" &&
+        (game?.flow === "standard" ||
+          game?.flow === "chain" ||
+          game?.flow === "combo") && <VoteCard game={game} />}
+      {snapshot.phase === "VOTE" &&
+        game?.flow !== "standard" &&
+        game?.flow !== "chain" &&
+        game?.flow !== "combo" && (
+          <WaitingCard text="Scores are coming up on the big screen." />
+        )}
       {snapshot.phase === "SCORE" && <ScoreCard />}
       {snapshot.phase === "MATCH_END" && <EndCard />}
       <div aria-live="polite" className="mt-auto text-center text-xs text-mist/40">
@@ -125,16 +129,55 @@ function SubmitCard({
   submitted: boolean;
   game: GameCard | null;
 }) {
-  const { snapshot } = useRoomStore();
+  const { snapshot, session } = useRoomStore();
   const round = snapshot?.round;
-  if (!round || !game) return null;
+  if (!round || !game || !session) return null;
+
+  // For multi-stage (chain/combo) games, look up this player's target.
+  const target: PlayerStageTarget | null =
+    round.playerTargets?.[session.playerId] ?? null;
 
   const kind = round.submissionKind;
-  if (kind === "DRAWING") return <DrawingSubmit submitted={submitted} game={game} />;
+  if (kind === "DRAWING")
+    return <DrawingSubmit submitted={submitted} game={game} target={target} />;
   if (kind === "QUIZ") return <QuizSubmit submitted={submitted} game={game} />;
   if (kind === "TAP") return <TapSubmit submitted={submitted} game={game} />;
   if (kind === "PERCENT") return <PercentSubmit submitted={submitted} game={game} />;
-  return <TextSubmit submitted={submitted} game={game} />;
+  if (kind === "TRACE") return <TraceSubmit submitted={submitted} game={game} />;
+  if (kind === "COLOR") return <ColorSubmit submitted={submitted} game={game} />;
+  return <TextSubmit submitted={submitted} game={game} target={target} />;
+}
+
+// For chain/combo games, a small banner above the submission prompt that
+// shows the player what they're responding to (a previous drawing or phrase).
+function StageContext({ target }: { target: PlayerStageTarget | null }) {
+  if (!target) return null;
+  const fromWho = target.fromPlayerName ? ` from ${target.fromPlayerName}` : "";
+  if (target.inputKind === "DRAWING" && target.inputText) {
+    const drawing = tryParseDrawing(target.inputText);
+    if (!drawing) return null;
+    return (
+      <div className="mt-3 rounded-xl border border-white/10 bg-white/5 p-3">
+        <div className="text-xs uppercase tracking-widest text-mist/60">
+          Drawing{fromWho}
+        </div>
+        <div className="mt-2">
+          <DrawingView drawing={drawing} />
+        </div>
+      </div>
+    );
+  }
+  if (target.inputKind === "TEXT" && target.inputText) {
+    return (
+      <div className="mt-3 rounded-xl border border-white/10 bg-white/5 p-3 text-sm">
+        <div className="text-xs uppercase tracking-widest text-mist/60">
+          Phrase{fromWho}
+        </div>
+        <div className="mt-1 text-base">&ldquo;{target.inputText}&rdquo;</div>
+      </div>
+    );
+  }
+  return null;
 }
 
 function PercentSubmit({ submitted, game }: { submitted: boolean; game: GameCard }) {
@@ -240,12 +283,25 @@ function SubmitHeader({
   );
 }
 
-function TextSubmit({ submitted, game }: { submitted: boolean; game: GameCard }) {
+function TextSubmit({
+  submitted,
+  game,
+  target,
+}: {
+  submitted: boolean;
+  game: GameCard;
+  target: PlayerStageTarget | null;
+}) {
   const { snapshot } = useRoomStore();
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const round = snapshot?.round;
+
+  // New stage → reset the local draft so we don't carry a prior stage's text.
+  useEffect(() => {
+    setText("");
+  }, [round?.stage]);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -259,12 +315,20 @@ function TextSubmit({ submitted, game }: { submitted: boolean; game: GameCard })
   }
 
   if (!round) return null;
-  const placeholder = placeholderForGame(game.id);
-  const label = labelForGame(game.id);
+  const placeholder = placeholderForGame(game.id, round.stage);
+  const label = labelForGame(game.id, round.stage);
+  // For chain games the stage helper is more useful than a shared prompt.
+  const isMultiStage = (round.totalStages ?? 1) > 1;
 
   return (
     <div className="cc-card p-5">
       <SubmitHeader game={game} round={round} />
+      {isMultiStage && (
+        <div className="mt-2 text-xs uppercase tracking-widest text-mist/60">
+          Stage {round.stage + 1}/{round.totalStages} • {label}
+        </div>
+      )}
+      <StageContext target={target} />
       {submitted ? (
         <div className="mt-4 rounded-xl bg-neon/15 p-4 text-neon">
           Locked in. You can tweak it until time runs out.
@@ -302,12 +366,24 @@ function TextSubmit({ submitted, game }: { submitted: boolean; game: GameCard })
   );
 }
 
-function DrawingSubmit({ submitted, game }: { submitted: boolean; game: GameCard }) {
+function DrawingSubmit({
+  submitted,
+  game,
+  target,
+}: {
+  submitted: boolean;
+  game: GameCard;
+  target: PlayerStageTarget | null;
+}) {
   const { snapshot } = useRoomStore();
   const [drawing, setDrawing] = useState<Drawing>(() => emptyDrawing());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const round = snapshot?.round;
+
+  useEffect(() => {
+    setDrawing(emptyDrawing());
+  }, [round?.stage]);
 
   function submit() {
     if (busy) return;
@@ -328,9 +404,27 @@ function DrawingSubmit({ submitted, game }: { submitted: boolean; game: GameCard
   }
 
   if (!round) return null;
+  const isMultiStage = (round.totalStages ?? 1) > 1;
+  // For chain games, stage 1 shows the phrase the player needs to draw.
+  const drawPhrase =
+    target?.inputKind === "TEXT" && target.inputText ? target.inputText : null;
   return (
     <div className="cc-card p-4">
       <SubmitHeader game={game} round={round} />
+      {isMultiStage && (
+        <div className="mt-2 text-xs uppercase tracking-widest text-mist/60">
+          Stage {round.stage + 1}/{round.totalStages} • Draw this
+        </div>
+      )}
+      {drawPhrase && (
+        <div className="mt-2 rounded-xl border border-white/10 bg-white/5 p-3 text-center">
+          <div className="text-xs uppercase tracking-widest text-mist/60">
+            Draw this
+            {target?.fromPlayerName ? ` • from ${target.fromPlayerName}` : ""}
+          </div>
+          <div className="mt-1 text-lg font-semibold">&ldquo;{drawPhrase}&rdquo;</div>
+        </div>
+      )}
       <div className="mt-3">
         <Canvas value={drawing} onChange={setDrawing} />
       </div>
@@ -660,6 +754,402 @@ function TapSubmit({ submitted, game }: { submitted: boolean; game: GameCard }) 
   );
 }
 
+// Trace Race — finger-trace the shown curve. Guide path is sampled into N
+// checkpoints and the player's stroke is scored by how many checkpoints it
+// passes close to, multiplied by a speed factor.
+interface TracePoint {
+  x: number;
+  y: number;
+}
+
+const TRACE_GUIDES: Record<string, { path: TracePoint[]; viewBox: string }> = {
+  // Each guide is sampled in the 0..100 viewBox and drawn as a smooth curve.
+  Spiral: {
+    viewBox: "0 0 100 100",
+    path: Array.from({ length: 60 }, (_, i) => {
+      const t = i / 59;
+      const angle = t * Math.PI * 4;
+      const radius = 6 + t * 36;
+      return {
+        x: 50 + Math.cos(angle) * radius,
+        y: 50 + Math.sin(angle) * radius,
+      };
+    }),
+  },
+  Star: {
+    viewBox: "0 0 100 100",
+    path: (() => {
+      const pts: TracePoint[] = [];
+      const outer = 42,
+        inner = 18;
+      for (let i = 0; i <= 10; i++) {
+        const a = (i * Math.PI) / 5 - Math.PI / 2;
+        const r = i % 2 === 0 ? outer : inner;
+        pts.push({ x: 50 + Math.cos(a) * r, y: 50 + Math.sin(a) * r });
+      }
+      return pts;
+    })(),
+  },
+  Wave: {
+    viewBox: "0 0 100 100",
+    path: Array.from({ length: 60 }, (_, i) => {
+      const t = i / 59;
+      return {
+        x: 8 + t * 84,
+        y: 50 + Math.sin(t * Math.PI * 3) * 26,
+      };
+    }),
+  },
+  Heart: {
+    viewBox: "0 0 100 100",
+    path: Array.from({ length: 60 }, (_, i) => {
+      const t = (i / 59) * Math.PI * 2;
+      const x = 16 * Math.pow(Math.sin(t), 3);
+      const y =
+        13 * Math.cos(t) -
+        5 * Math.cos(2 * t) -
+        2 * Math.cos(3 * t) -
+        Math.cos(4 * t);
+      return { x: 50 + x * 2.2, y: 50 - y * 2.2 };
+    }),
+  },
+  Lightning: {
+    viewBox: "0 0 100 100",
+    path: [
+      { x: 55, y: 8 },
+      { x: 28, y: 45 },
+      { x: 48, y: 48 },
+      { x: 30, y: 92 },
+      { x: 72, y: 44 },
+      { x: 52, y: 44 },
+      { x: 62, y: 12 },
+    ],
+  },
+  "Loop-the-loop": {
+    viewBox: "0 0 100 100",
+    path: (() => {
+      const pts: TracePoint[] = [];
+      for (let i = 0; i < 30; i++) {
+        const t = i / 29;
+        pts.push({ x: 18 + t * 30, y: 32 + Math.sin(t * Math.PI * 2) * 18 });
+      }
+      for (let i = 0; i < 30; i++) {
+        const t = i / 29;
+        pts.push({ x: 52 + t * 30, y: 68 + Math.sin(t * Math.PI * 2) * 18 });
+      }
+      return pts;
+    })(),
+  },
+};
+
+function getGuide(name: string | null) {
+  if (!name) return TRACE_GUIDES.Wave;
+  return TRACE_GUIDES[name] ?? TRACE_GUIDES.Wave;
+}
+
+function TraceSubmit({ submitted, game }: { submitted: boolean; game: GameCard }) {
+  const { snapshot } = useRoomStore();
+  const round = snapshot?.round;
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [userPath, setUserPath] = useState<TracePoint[]>([]);
+  const pathRef = useRef<TracePoint[]>([]);
+  const activeRef = useRef<{ pointerId: number } | null>(null);
+  const [score, setScore] = useState(0);
+  const [accuracy, setAccuracy] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submittedOnce, setSubmittedOnce] = useState(false);
+  const startRef = useRef<number>(Date.now());
+  const guide = getGuide(round?.prompt ?? null);
+
+  useEffect(() => {
+    startRef.current = Date.now();
+    setUserPath([]);
+    pathRef.current = [];
+    setScore(0);
+    setAccuracy(0);
+    setSubmittedOnce(false);
+  }, [round?.number, round?.gameId]);
+
+  const endsAt = round?.phaseEndsAt ?? null;
+
+  function toLocal(e: React.PointerEvent<SVGSVGElement>): TracePoint | null {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * 100,
+      y: ((e.clientY - rect.top) / rect.height) * 100,
+    };
+  }
+
+  function rescore(points: TracePoint[]) {
+    if (!points.length) {
+      setScore(0);
+      setAccuracy(0);
+      return;
+    }
+    // Checkpoint-hit: for each guide point, check if the user traced within
+    // threshold; accuracy = hits / total. Score = raw hit count + speed bonus.
+    const threshold = 10; // viewBox units
+    let hits = 0;
+    for (const g of guide.path) {
+      for (const p of points) {
+        const dx = p.x - g.x;
+        const dy = p.y - g.y;
+        if (dx * dx + dy * dy <= threshold * threshold) {
+          hits++;
+          break;
+        }
+      }
+    }
+    const acc = Math.round((hits / guide.path.length) * 100);
+    const elapsed = Math.max(1, Date.now() - startRef.current);
+    // Faster → higher multiplier (up to ~1.5× if you finish in 4s).
+    const speedFactor = Math.max(1, Math.min(1.5, 6000 / elapsed));
+    const sc = Math.round(acc * 10 * speedFactor);
+    setAccuracy(acc);
+    setScore(sc);
+  }
+
+  function startStroke(e: React.PointerEvent<SVGSVGElement>) {
+    const p = toLocal(e);
+    if (!p) return;
+    activeRef.current = { pointerId: e.pointerId };
+    try {
+      (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    } catch {
+      // not supported — fine
+    }
+    pathRef.current = [p];
+    setUserPath([p]);
+    startRef.current = Date.now();
+  }
+
+  function extendStroke(e: React.PointerEvent<SVGSVGElement>) {
+    const active = activeRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    const p = toLocal(e);
+    if (!p) return;
+    const last = pathRef.current[pathRef.current.length - 1];
+    if (last) {
+      const dx = p.x - last.x;
+      const dy = p.y - last.y;
+      if (dx * dx + dy * dy < 0.5) return;
+    }
+    pathRef.current = [...pathRef.current, p];
+    setUserPath(pathRef.current);
+    rescore(pathRef.current);
+  }
+
+  function endStroke(e: React.PointerEvent<SVGSVGElement>) {
+    if (!activeRef.current || activeRef.current.pointerId !== e.pointerId) return;
+    activeRef.current = null;
+    rescore(pathRef.current);
+  }
+
+  function doSubmit() {
+    if (submitting || submittedOnce) return;
+    setSubmitting(true);
+    setError(null);
+    getSocket().emit(
+      "player:submit",
+      {
+        text: JSON.stringify({
+          score,
+          accuracy,
+          timeMs: Math.min(60_000, Date.now() - startRef.current),
+        }),
+      },
+      (res) => {
+        setSubmitting(false);
+        if (!res.ok) setError(res.reason);
+        else setSubmittedOnce(true);
+      }
+    );
+  }
+
+  // Auto-submit at phase end.
+  useEffect(() => {
+    if (!endsAt) return;
+    const msLeft = endsAt - Date.now();
+    if (msLeft <= 0) return;
+    const t = setTimeout(() => doSubmit(), msLeft + 150);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endsAt, score, accuracy]);
+
+  if (!round) return null;
+  const guidePath = guide.path
+    .map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.y}`)
+    .join(" ");
+  const userPathD = userPath.length
+    ? userPath.map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.y}`).join(" ")
+    : "";
+  return (
+    <div className="cc-card p-4">
+      <SubmitHeader game={game} round={round} />
+      <div className="mt-3 flex items-center justify-between text-sm">
+        <span className="cc-chip">Accuracy {accuracy}%</span>
+        <span className="cc-chip !bg-neon/20 !text-neon">Score {score}</span>
+      </div>
+      <div className="mt-3 rounded-2xl border border-white/10 bg-gradient-to-br from-neon/10 via-black to-sol/10 p-1">
+        <svg
+          ref={svgRef}
+          viewBox={guide.viewBox}
+          className="aspect-square w-full touch-none select-none rounded-xl"
+          onPointerDown={startStroke}
+          onPointerMove={extendStroke}
+          onPointerUp={endStroke}
+          onPointerCancel={endStroke}
+          role="img"
+          aria-label={`Trace guide: ${round.prompt}`}
+        >
+          <path
+            d={guidePath}
+            stroke="rgba(124,248,208,0.45)"
+            strokeWidth={2.2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            fill="none"
+            strokeDasharray="3 2"
+          />
+          {userPathD && (
+            <path
+              d={userPathD}
+              stroke="#7cf8d0"
+              strokeWidth={3}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="none"
+            />
+          )}
+        </svg>
+      </div>
+      {error && (
+        <div role="alert" className="mt-2 text-sm text-ember">
+          {error}
+        </div>
+      )}
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            pathRef.current = [];
+            setUserPath([]);
+            setScore(0);
+            setAccuracy(0);
+            startRef.current = Date.now();
+          }}
+          className="cc-btn-ghost flex-1 text-sm"
+        >
+          Retry
+        </button>
+        <button
+          type="button"
+          onClick={doSubmit}
+          disabled={submitting || submittedOnce}
+          className="cc-btn-primary flex-1 text-sm"
+        >
+          {submittedOnce || submitted ? "Banked" : "Bank trace"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Slider Wars — three RGB sliders. Target color is only visible on the TV;
+// the player gets the name + a live preview of their own color and submits
+// when they feel they've matched.
+function ColorSubmit({ submitted, game }: { submitted: boolean; game: GameCard }) {
+  const { snapshot } = useRoomStore();
+  const round = snapshot?.round;
+  const [rgb, setRgb] = useState({ r: 128, g: 128, b: 128 });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setRgb({ r: 128, g: 128, b: 128 });
+  }, [round?.number, round?.gameId]);
+
+  function submit() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    getSocket().emit(
+      "player:submit",
+      { text: JSON.stringify(rgb) },
+      (res) => {
+        setBusy(false);
+        if (!res.ok) setError(res.reason);
+      }
+    );
+  }
+
+  if (!round) return null;
+  const hex = `rgb(${rgb.r},${rgb.g},${rgb.b})`;
+  return (
+    <div className="cc-card p-5">
+      <SubmitHeader game={game} round={round} />
+      <div className="mt-2 text-xs uppercase tracking-widest text-mist/60">
+        Target is on the big screen. Match it.
+      </div>
+      <div
+        className="mt-4 h-32 w-full rounded-2xl border border-white/10 transition-colors"
+        style={{ background: hex }}
+        aria-label="Your current color"
+      />
+      <div className="mt-4 space-y-3">
+        {(
+          [
+            { key: "r", label: "R", color: "#ff6c6c" },
+            { key: "g", label: "G", color: "#7cf8d0" },
+            { key: "b", label: "B", color: "#6fb3ff" },
+          ] as const
+        ).map(({ key, label, color }) => (
+          <div key={key}>
+            <div className="flex items-center justify-between text-sm">
+              <span style={{ color }}>{label}</span>
+              <span className="font-mono tabular-nums text-mist/70">{rgb[key]}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={255}
+              step={1}
+              value={rgb[key]}
+              onChange={(e) =>
+                setRgb((cur) => ({ ...cur, [key]: Number(e.target.value) }))
+              }
+              className="mt-1 w-full"
+              style={{ accentColor: color }}
+              aria-label={`${label} channel`}
+            />
+          </div>
+        ))}
+      </div>
+      {submitted && (
+        <div className="mt-3 rounded-xl bg-neon/15 p-3 text-sm text-neon">
+          Color locked. Keep tweaking until time's up.
+        </div>
+      )}
+      {error && (
+        <div role="alert" className="mt-2 text-sm text-ember">
+          {error}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={submit}
+        disabled={busy}
+        className="cc-btn-primary mt-4 w-full"
+      >
+        {submitted ? "Update color" : "Lock in color"}
+      </button>
+    </div>
+  );
+}
+
 function WaitingCard({ text }: { text: string }) {
   return (
     <div className="cc-card p-6 text-center">
@@ -699,6 +1189,108 @@ function VoteCard({ game }: { game: GameCard | null }) {
   }
 
   if (!round || !game) return null;
+
+  // Chain games (Stroke of Genius): vote for a chain by its origin.
+  if (game.flow === "chain" && round.chains) {
+    return (
+      <div className="cc-card p-5">
+        <div className="flex items-center justify-between text-xs text-mist/60">
+          <span>Vote for the funniest chain</span>
+          <Countdown endsAt={round.phaseEndsAt} />
+        </div>
+        <div className="mt-3 grid gap-2">
+          {round.chains.map((c, i) => {
+            // Chain id for voting is carried in reveal[i].submissionId (server
+            // keeps the seed submission id as the vote target).
+            const revealEntry = round.reveal[i];
+            const submissionId = revealEntry?.submissionId ?? null;
+            const authorId = revealEntry?.authorId ?? null;
+            const mine = authorId && authorId === myId;
+            return (
+              <button
+                key={submissionId ?? i}
+                disabled={busy || alreadyVoted || !!mine || !submissionId}
+                onClick={() => submissionId && vote(submissionId, !!mine)}
+                className={`w-full rounded-xl border p-3 text-left transition ${
+                  mine
+                    ? "border-white/5 bg-white/5 text-mist/50"
+                    : "border-white/10 bg-white/5 hover:border-ember hover:bg-ember/10"
+                }`}
+              >
+                <div className="text-xs uppercase tracking-widest text-mist/50">
+                  Chain {i + 1} • from {c.originPlayerName}
+                  {mine ? " (yours)" : ""}
+                </div>
+                <div className="mt-1 text-sm italic text-mist/70">
+                  &ldquo;{c.entries[0]?.text}&rdquo;
+                </div>
+                <div className="mt-1 text-xs text-mist/50">
+                  → {c.entries.length} step{c.entries.length === 1 ? "" : "s"}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        {alreadyVoted && <div className="mt-3 text-sm text-neon">Vote locked in. Nice.</div>}
+        {error && (
+          <div role="alert" className="mt-2 text-sm text-ember">
+            {error}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Combo games (Mash-Up Doodle): vote for icon+slogan combos.
+  if (game.flow === "combo" && round.mashups) {
+    return (
+      <div className="cc-card p-5">
+        <div className="flex items-center justify-between text-xs text-mist/60">
+          <span>Vote for the best t-shirt</span>
+          <Countdown endsAt={round.phaseEndsAt} />
+        </div>
+        <div className="mt-3 grid gap-3">
+          {round.mashups.map((m) => {
+            const icon = tryParseDrawing(m.iconText);
+            const mine = m.iconAuthorId === myId || m.sloganAuthorId === myId;
+            return (
+              <button
+                key={m.id}
+                disabled={busy || alreadyVoted || mine}
+                onClick={() => vote(m.id, mine)}
+                className={`w-full rounded-2xl border p-3 text-left transition ${
+                  mine
+                    ? "border-white/5 bg-white/5 text-mist/50"
+                    : "border-white/10 bg-white/5 hover:border-sol hover:bg-sol/10"
+                }`}
+              >
+                {icon && (
+                  <div>
+                    <DrawingView drawing={icon} />
+                  </div>
+                )}
+                <div className="mt-2 text-center text-base font-semibold">
+                  &ldquo;{m.sloganText}&rdquo;
+                </div>
+                {mine && (
+                  <div className="mt-1 text-center text-xs text-mist/50">
+                    (one of yours)
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {alreadyVoted && <div className="mt-3 text-sm text-neon">Vote locked in. Nice.</div>}
+        {error && (
+          <div role="alert" className="mt-2 text-sm text-ember">
+            {error}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="cc-card p-5">
       <div className="flex items-center justify-between text-xs text-mist/60">
@@ -829,7 +1421,14 @@ function Loader() {
   );
 }
 
-function placeholderForGame(gameId: string): string {
+function placeholderForGame(gameId: string, stage = 0): string {
+  if (gameId === "stroke-of-genius") {
+    if (stage === 0) return "e.g. A cat running for mayor";
+    if (stage === 2) return "Type what the drawing shows…";
+  }
+  if (gameId === "mash-up-doodle" && stage === 1) {
+    return "A punchy t-shirt slogan…";
+  }
   const map: Record<string, string> = {
     "hot-take-hustle": "Drop your take…",
     "pitch-party": "Your one-sentence pitch…",
@@ -846,7 +1445,14 @@ function placeholderForGame(gameId: string): string {
   return map[gameId] ?? "Type your answer…";
 }
 
-function labelForGame(gameId: string): string {
+function labelForGame(gameId: string, stage = 0): string {
+  if (gameId === "stroke-of-genius") {
+    if (stage === 0) return "Seed phrase";
+    if (stage === 2) return "What is this drawing?";
+  }
+  if (gameId === "mash-up-doodle" && stage === 1) {
+    return "Your slogan";
+  }
   const map: Record<string, string> = {
     "hot-take-hustle": "Your take",
     "pitch-party": "Your pitch",

@@ -22,13 +22,45 @@ export type ScoringMode =
   | "percent"
   // herd: Group Mentality. Players submit a short text answer to a prompt;
   // they score based on how many other players matched their answer.
-  | "herd";
+  | "herd"
+  // trace: Trace Race. Real-time finger-trace accuracy game; scored client-side
+  // like reaction but with an accuracy payload.
+  | "trace"
+  // color: Slider Wars. 3 sliders form an RGB value; scored by distance from
+  // a target colour.
+  | "color"
+  // chain: Stroke of Genius. Multi-stage "telephone" — phrase → drawing → guess.
+  | "chain"
+  // combo: Mash-Up Doodle. Two parallel stages (icon + slogan) then random pairings.
+  | "combo";
+
+export type StageKind = "TEXT" | "DRAWING" | "SLOGAN" | "ICON";
+
+export interface GameStage {
+  // What the player submits this stage. Mirrors SubmissionKind values but
+  // typed loosely so games can label their stages (e.g. "SLOGAN" is TEXT).
+  kind: "TEXT" | "DRAWING";
+  // Label shown above the submission form.
+  label: string;
+  // Placeholder shown inside the submission form.
+  placeholder: string;
+  // Seconds for this stage. Falls back to DEFAULTS.SUBMIT_SECONDS.
+  seconds?: number;
+  // For chain games: how the target is routed to each player at this stage.
+  //   "prompt-bank"  — pick a fresh prompt from the game's seedPrompts.
+  //   "from-prev"    — the previous player's submission from the prior stage.
+  targetRouting?: "prompt-bank" | "from-prev";
+  // For chain games: optional helper text shown with the target.
+  helper?: string;
+}
 
 // Game flow decides which phases run:
 //   standard : SUBMIT → REVEAL → VOTE → SCORE (take + fib games)
 //   quiz     : SUBMIT → REVEAL → SCORE      (no voting — truth scores directly)
 //   reaction : SUBMIT → SCORE              (real-time mini-game, no reveal/vote)
-export type GameFlow = "standard" | "quiz" | "reaction";
+//   chain    : (SUBMIT × N) → REVEAL → VOTE → SCORE  (telephone-style)
+//   combo    : (SUBMIT × N) → REVEAL → VOTE → SCORE  (parallel submissions, mash-up)
+export type GameFlow = "standard" | "quiz" | "reaction" | "chain" | "combo";
 
 export interface SeedPrompt {
   text: string;
@@ -66,6 +98,9 @@ export interface GameDefinition {
   seedPrompts: SeedPrompt[];
   seedCriteria?: { label: string; rating: Rating; hint?: string }[];
   accent: "ember" | "neon" | "sol" | "orchid";
+  // Multi-stage games (chain/combo) declare an ordered list of stages. Each
+  // stage is a SUBMIT phase with its own kind, label, and routing rules.
+  stages?: GameStage[];
 }
 
 const universalCriteria = (gameSpice: string[]): GameDefinition["seedCriteria"] => [
@@ -768,6 +803,170 @@ export const GAMES: Record<string, GameDefinition> = {
       { text: "Name a month that has a major holiday.", rating: "FAMILY", tag: "word" },
       { text: "Name a vegetable kids universally hate.", rating: "FAMILY", tag: "word" },
       { text: "Name a common password people shouldn't use.", rating: "STANDARD", tag: "tech" },
+    ],
+  },
+
+  "trace-race": {
+    id: "trace-race",
+    name: "Trace Race",
+    tagline: "Finger-paint the curve. Accuracy × speed.",
+    description:
+      "A curve flashes on the big screen and your phone. Trace it on your phone as fast and accurately as possible. The TV shows every player's live progress bar — the track fills as your stroke hits more of the guide.",
+    scoring: "trace",
+    flow: "reaction",
+    submissionKind: "TRACE",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "Trace the curve!",
+    submissionLabel: "Trace",
+    voteInstruction: () => "",
+    revealKicker: "TRACE RESULTS",
+    submitSeconds: 22,
+    accent: "neon",
+    seedPrompts: [
+      { text: "Spiral", rating: "FAMILY", tag: "shape", detail: "Start from the center outwards." },
+      { text: "Star", rating: "FAMILY", tag: "shape", detail: "Five points, one stroke." },
+      { text: "Wave", rating: "FAMILY", tag: "shape", detail: "Smooth sinusoidal flow." },
+      { text: "Heart", rating: "FAMILY", tag: "shape", detail: "One continuous loop." },
+      { text: "Lightning", rating: "FAMILY", tag: "shape", detail: "Sharp zig-zag strike." },
+      { text: "Loop-the-loop", rating: "FAMILY", tag: "shape", detail: "Two stacked circles." },
+    ],
+  },
+
+  "slider-wars": {
+    id: "slider-wars",
+    name: "Slider Wars",
+    tagline: "Three sliders. One target color. Dial it in.",
+    description:
+      "A target color flashes on the big screen. Slide R, G, and B on your phone to match it — by eye. The TV shows every player's live swatch converging toward the target. Closest color banks the round.",
+    scoring: "color",
+    flow: "quiz",
+    submissionKind: "COLOR",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "Match the target color.",
+    submissionLabel: "Your color",
+    voteInstruction: () => "",
+    revealKicker: "COLOR LAB",
+    submitSeconds: 30,
+    revealSeconds: 8,
+    accent: "orchid",
+    // `truth` stores the target color as "r,g,b" (0-255 each).
+    seedPrompts: [
+      { text: "Sunset Coral", truth: "255,120,88", rating: "FAMILY", tag: "color" },
+      { text: "Electric Teal", truth: "50,220,200", rating: "FAMILY", tag: "color" },
+      { text: "Plum Royale", truth: "120,60,180", rating: "FAMILY", tag: "color" },
+      { text: "Lemon Pop", truth: "245,235,80", rating: "FAMILY", tag: "color" },
+      { text: "Ocean Night", truth: "24,60,110", rating: "FAMILY", tag: "color" },
+      { text: "Mint Chip", truth: "130,220,150", rating: "FAMILY", tag: "color" },
+      { text: "Cherry Soda", truth: "220,40,80", rating: "FAMILY", tag: "color" },
+      { text: "Orchid Mist", truth: "200,160,230", rating: "FAMILY", tag: "color" },
+      { text: "Burnt Sienna", truth: "180,75,45", rating: "FAMILY", tag: "color" },
+      { text: "Glacier", truth: "180,220,235", rating: "FAMILY", tag: "color" },
+      { text: "Moss Court", truth: "95,140,70", rating: "FAMILY", tag: "color" },
+      { text: "Midnight Rose", truth: "110,20,60", rating: "FAMILY", tag: "color" },
+    ],
+  },
+
+  "stroke-of-genius": {
+    id: "stroke-of-genius",
+    name: "Stroke of Genius",
+    tagline: "Draw. Guess. Watch it mutate. The chain tells the joke.",
+    description:
+      "Round 1: you write a seed phrase. Round 2: you receive someone else's phrase and draw it. Round 3: you see a drawing and type what you think it is. The TV reveals each full chain — the mutation is always the punchline.",
+    scoring: "chain",
+    flow: "chain",
+    submissionKind: "TEXT",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "Write a fun seed phrase…",
+    submissionLabel: "Seed phrase",
+    voteInstruction: () => "Vote for the funniest chain.",
+    revealKicker: "CHAIN REVEAL",
+    revealSeconds: 22,
+    voteSeconds: 25,
+    accent: "ember",
+    stages: [
+      {
+        kind: "TEXT",
+        label: "Seed phrase",
+        placeholder: "e.g. A cat running for mayor",
+        seconds: 25,
+        targetRouting: "prompt-bank",
+        helper: "Short + visual. Three to eight words works best.",
+      },
+      {
+        kind: "DRAWING",
+        label: "Draw this",
+        placeholder: "Tap to draw…",
+        seconds: 55,
+        targetRouting: "from-prev",
+        helper: "Somebody else wrote this. Draw it as you see it.",
+      },
+      {
+        kind: "TEXT",
+        label: "What is this?",
+        placeholder: "Type what the drawing shows…",
+        seconds: 25,
+        targetRouting: "from-prev",
+        helper: "You're looking at somebody else's drawing. Guess the original phrase.",
+      },
+    ],
+    seedPrompts: [
+      { text: "A pirate at the laundromat", rating: "FAMILY", tag: "seed" },
+      { text: "A dragon reading bedtime stories", rating: "FAMILY", tag: "seed" },
+      { text: "A raccoon presenting a slide deck", rating: "FAMILY", tag: "seed" },
+      { text: "An astronaut walking a goldfish", rating: "FAMILY", tag: "seed" },
+      { text: "A wizard stuck in traffic", rating: "FAMILY", tag: "seed" },
+      { text: "A cowboy at a yoga class", rating: "FAMILY", tag: "seed" },
+      { text: "A chef cooking on a skateboard", rating: "FAMILY", tag: "seed" },
+      { text: "A ghost doing taxes", rating: "FAMILY", tag: "seed" },
+      { text: "A robot asking for directions", rating: "FAMILY", tag: "seed" },
+      { text: "A shark running a lemonade stand", rating: "FAMILY", tag: "seed" },
+      { text: "An octopus playing drums", rating: "FAMILY", tag: "seed" },
+      { text: "A vampire at a pool party", rating: "STANDARD", tag: "seed" },
+    ],
+  },
+
+  "mash-up-doodle": {
+    id: "mash-up-doodle",
+    name: "Mash-Up Doodle",
+    tagline: "Draw an icon. Write a slogan. Random mash-ups. Vote.",
+    description:
+      "Everyone draws a tiny icon. Then everyone writes a punchy slogan. The TV mashes random icon + slogan pairs into t-shirts. Vote for the best combo. Both halves of the winner score.",
+    scoring: "combo",
+    flow: "combo",
+    submissionKind: "DRAWING",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "Tap to draw…",
+    submissionLabel: "Your icon",
+    voteInstruction: () => "Which t-shirt is the winner?",
+    revealKicker: "MASH-UPS INCOMING",
+    revealSeconds: 12,
+    voteSeconds: 25,
+    accent: "sol",
+    stages: [
+      {
+        kind: "DRAWING",
+        label: "Draw an icon",
+        placeholder: "Tap to draw an icon…",
+        seconds: 45,
+      },
+      {
+        kind: "TEXT",
+        label: "Write a slogan",
+        placeholder: "A punchy one-liner…",
+        seconds: 30,
+      },
+    ],
+    seedPrompts: [
+      { text: "Merch Drop", rating: "FAMILY", tag: "theme" },
+      { text: "Street Line", rating: "FAMILY", tag: "theme" },
+      { text: "Festival Capsule", rating: "FAMILY", tag: "theme" },
+      { text: "Fake Band Tour", rating: "FAMILY", tag: "theme" },
+      { text: "Cursed Cafe", rating: "FAMILY", tag: "theme" },
+      { text: "Weekend Uniform", rating: "FAMILY", tag: "theme" },
     ],
   },
 };

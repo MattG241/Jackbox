@@ -1,9 +1,12 @@
 import type { Server } from "socket.io";
 import { prisma } from "@/lib/db";
 import type {
+  ChainReveal,
   GameCard,
+  MashupReveal,
   MatchHighlight,
   Phase,
+  PlayerStageTarget,
   PublicPlayer,
   RevealItem,
   RoomSnapshot,
@@ -61,6 +64,14 @@ interface LiveRoom {
     // For QUIZ phase reveal: whether the truth has been unveiled yet.
     truthRevealed: boolean;
     roundSummary: { playerId: string; name: string; delta: number }[] | null;
+    // Multi-stage games: which stage we're on, and how many total.
+    stage: number;
+    totalStages: number;
+    // Per-player target for the current SUBMIT stage (chain/combo games).
+    playerTargets: Record<string, PlayerStageTarget> | null;
+    // Chain/combo reveal data, populated at REVEAL phase.
+    chains: ChainReveal[] | null;
+    mashups: MashupReveal[] | null;
   } | null;
   phaseTimer: NodeJS.Timeout | null;
   sockets: Set<string>;
@@ -77,6 +88,17 @@ const socketToContext = new Map<
 
 export function getRoomByCode(code: string): LiveRoom | undefined {
   return rooms.get(code);
+}
+
+function parseRgb(raw: string): { r: number; g: number; b: number } {
+  const parts = raw.split(",").map((p) => Number(p.trim()));
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n)))
+    return { r: 0, g: 0, b: 0 };
+  return {
+    r: Math.max(0, Math.min(255, Math.round(parts[0]))),
+    g: Math.max(0, Math.min(255, Math.round(parts[1]))),
+    b: Math.max(0, Math.min(255, Math.round(parts[2]))),
+  };
 }
 
 function clearPhaseTimer(room: LiveRoom) {
@@ -108,6 +130,16 @@ export async function ensureRoomLoaded(code: string): Promise<LiveRoom | null> {
   };
   rooms.set(code, live);
   return live;
+}
+
+// For multi-stage games the active SubmissionKind depends on which stage we
+// are on; single-stage games just return their canonical kind.
+function stageSubmissionKind(gameId: string, stage: number) {
+  const def = getGame(gameId);
+  if (def.stages && def.stages[stage]) {
+    return def.stages[stage].kind === "DRAWING" ? "DRAWING" : "TEXT";
+  }
+  return def.submissionKind;
 }
 
 function toGameCards(): GameCard[] {
@@ -160,7 +192,7 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
   if (room.round) {
     const [subs, votes] = await Promise.all([
       prisma.submission.findMany({
-        where: { roundId: room.round.id },
+        where: { roundId: room.round.id, stage: room.round.stage },
         select: { playerId: true },
       }),
       prisma.vote.findMany({ where: { roundId: room.round.id }, select: { voterId: true } }),
@@ -197,7 +229,7 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
           total: room.round.total,
           gameId: room.round.gameId,
           flow: getGame(room.round.gameId).flow,
-          submissionKind: getGame(room.round.gameId).submissionKind,
+          submissionKind: stageSubmissionKind(room.round.gameId, room.round.stage),
           prompt: room.round.promptText,
           promptDetail: room.round.promptDetail,
           choices: room.round.choices,
@@ -213,6 +245,11 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
           reveal: revealForClient,
           votedVoterIds: votedIds,
           roundSummary: room.round.roundSummary,
+          stage: room.round.stage,
+          totalStages: room.round.totalStages,
+          playerTargets: room.round.playerTargets,
+          chains: room.round.chains,
+          mashups: room.round.mashups,
         }
       : null,
   };
@@ -385,6 +422,7 @@ async function advanceToNextRound(io: IO, room: LiveRoom) {
     }
   }
 
+  const totalStages = def.stages?.length ?? 1;
   room.phase = "SUBMIT";
   room.round = {
     id: round.id,
@@ -401,8 +439,146 @@ async function advanceToNextRound(io: IO, room: LiveRoom) {
     reveal: [],
     truthRevealed: false,
     roundSummary: null,
+    stage: 0,
+    totalStages,
+    playerTargets: null,
+    chains: null,
+    mashups: null,
   };
-  schedulePhaseEnd(io, room, submitSeconds, () => enterRevealPhase(io, room));
+  // For multi-stage games, build the first stage's per-player targets so the
+  // phones know what to show.
+  if (def.stages) {
+    room.round.playerTargets = await buildStageTargets(room, 0);
+    // First stage also uses the stage's own submitSeconds if provided.
+    const s0 = def.stages[0].seconds ?? submitSeconds;
+    room.round.phaseEndsAt = Date.now() + s0 * 1000;
+    await prisma.round.update({
+      where: { id: round.id },
+      data: {
+        phaseEndsAt: new Date(room.round.phaseEndsAt),
+        totalStages,
+      },
+    });
+    schedulePhaseEnd(io, room, s0, () => advanceSubmitStage(io, room));
+  } else {
+    schedulePhaseEnd(io, room, submitSeconds, () => enterRevealPhase(io, room));
+  }
+  await broadcast(io, room);
+}
+
+// Assemble the per-player target map for a given SUBMIT stage of a
+// chain/combo game. Returns null for single-stage games.
+async function buildStageTargets(
+  room: LiveRoom,
+  stage: number
+): Promise<Record<string, PlayerStageTarget> | null> {
+  if (!room.round) return null;
+  const def = getGame(room.round.gameId);
+  if (!def.stages) return null;
+  const stageDef = def.stages[stage];
+  if (!stageDef) return null;
+
+  const players = await prisma.player.findMany({
+    where: { roomId: room.id, isAudience: false, connected: true },
+    orderBy: { joinedAt: "asc" },
+  });
+  if (!players.length) return {};
+  const nameById = new Map(players.map((p) => [p.id, p.displayName]));
+
+  const targets: Record<string, PlayerStageTarget> = {};
+
+  // Chain: each stage (after 0) routes based on player order with a shift.
+  if (def.flow === "chain") {
+    if (stage === 0 || stageDef.targetRouting === "prompt-bank") {
+      // Seed phase: each player sees a fresh prompt from the bank. Or if the
+      // stage explicitly wants a fresh prompt, do the same.
+      const allPrompts = await prisma.prompt.findMany({
+        where: {
+          gameId: def.id,
+          ...(room.familyMode ? { rating: "FAMILY" as const } : {}),
+        },
+      });
+      const fallback = allPrompts.length
+        ? allPrompts
+        : await prisma.prompt.findMany({ where: { gameId: def.id } });
+      for (const p of players) {
+        const seed = fallback.length
+          ? fallback[Math.floor(Math.random() * fallback.length)]
+          : null;
+        targets[p.id] = {
+          kind: stageDef.kind === "DRAWING" ? "DRAWING" : "TEXT",
+          prompt: stage === 0 ? null : seed?.text ?? null,
+          inputKind: null,
+          inputText: stage === 0 ? null : seed?.text ?? null,
+          fromPlayerName: null,
+        };
+      }
+      return targets;
+    }
+    // Route from previous stage: player i at stage s receives player (i-1)'s
+    // submission from stage s-1 (cyclic).
+    const prevStage = stage - 1;
+    const prevSubs = await prisma.submission.findMany({
+      where: { roundId: room.round.id, stage: prevStage },
+    });
+    const subByPlayer = new Map(prevSubs.map((s) => [s.playerId, s]));
+    for (let i = 0; i < players.length; i++) {
+      const sourceIdx = (i - 1 + players.length) % players.length;
+      const sourcePlayer = players[sourceIdx];
+      const sourceSub = subByPlayer.get(sourcePlayer.id);
+      const prevStageDef = def.stages[prevStage];
+      const inputKind = prevStageDef.kind === "DRAWING" ? "DRAWING" : "TEXT";
+      targets[players[i].id] = {
+        kind: stageDef.kind === "DRAWING" ? "DRAWING" : "TEXT",
+        prompt: null,
+        inputKind,
+        inputText: sourceSub?.text ?? null,
+        fromPlayerName: nameById.get(sourcePlayer.id) ?? null,
+      };
+    }
+    return targets;
+  }
+
+  // Combo: all stages are independent; everybody sees the same shared prompt
+  // (the room's roll).
+  if (def.flow === "combo") {
+    for (const p of players) {
+      targets[p.id] = {
+        kind: stageDef.kind === "DRAWING" ? "DRAWING" : "TEXT",
+        prompt: null,
+        inputKind: null,
+        inputText: null,
+        fromPlayerName: null,
+      };
+    }
+    return targets;
+  }
+
+  return null;
+}
+
+// Called when the current SUBMIT stage is complete (timer expired or all
+// players submitted). Advances to the next stage or moves into REVEAL.
+async function advanceSubmitStage(io: IO, room: LiveRoom) {
+  if (!room.round) return;
+  const def = getGame(room.round.gameId);
+  if (!def.stages) {
+    return enterRevealPhase(io, room);
+  }
+  const nextStage = room.round.stage + 1;
+  if (nextStage >= def.stages.length) {
+    return enterRevealPhase(io, room);
+  }
+  room.round.stage = nextStage;
+  room.round.playerTargets = await buildStageTargets(room, nextStage);
+  const stageDef = def.stages[nextStage];
+  const seconds = stageDef.seconds ?? DEFAULTS.SUBMIT_SECONDS;
+  room.round.phaseEndsAt = Date.now() + seconds * 1000;
+  await prisma.round.update({
+    where: { id: room.round.id },
+    data: { stage: nextStage, phaseEndsAt: new Date(room.round.phaseEndsAt) },
+  });
+  schedulePhaseEnd(io, room, seconds, () => advanceSubmitStage(io, room));
   await broadcast(io, room);
 }
 
@@ -422,31 +598,132 @@ async function enterRevealPhase(io: IO, room: LiveRoom) {
 
   const submissions = await prisma.submission.findMany({
     where: { roundId: room.round.id },
-    include: { player: { select: { id: true, displayName: true } } },
+    include: { player: { select: { id: true, displayName: true, avatarColor: true, avatarEmoji: true } } },
   });
-  const items: RevealItem[] = submissions.map((s) => ({
-    submissionId: s.id,
-    authorId: s.playerId,
-    authorName: s.player.displayName,
-    text: s.text,
-    isTruth: false,
-  }));
-  // For fib games, inject the hidden truth as one of the items.
-  if (def.scoring === "fib" && room.round.promptTruth) {
-    items.push({
-      submissionId: null,
-      authorId: null,
-      authorName: null,
-      text: room.round.promptTruth,
-      isTruth: true,
+
+  let reveal: RevealItem[] = [];
+  let chains: ChainReveal[] | null = null;
+  let mashups: MashupReveal[] | null = null;
+
+  if (def.flow === "chain" && def.stages) {
+    // Stroke of Genius: assemble one ChainReveal per origin player. Stage 0
+    // submissions are the seed phrases; each stage thereafter was written by
+    // the player cyclically shifted down, so we walk the shift to reconstruct
+    // each chain end-to-end.
+    const players = await prisma.player.findMany({
+      where: { roomId: room.id, isAudience: false, connected: true },
+      orderBy: { joinedAt: "asc" },
     });
+    const n = players.length;
+    const byPlayerStage = new Map<string, Map<number, typeof submissions[number]>>();
+    for (const s of submissions) {
+      if (!byPlayerStage.has(s.playerId)) byPlayerStage.set(s.playerId, new Map());
+      byPlayerStage.get(s.playerId)!.set(s.stage, s);
+    }
+    chains = [];
+    for (let originIdx = 0; originIdx < n; originIdx++) {
+      const origin = players[originIdx];
+      const originSeed = byPlayerStage.get(origin.id)?.get(0);
+      if (!originSeed) continue;
+      const entries: ChainReveal["entries"] = [];
+      entries.push({
+        kind: "TEXT",
+        text: originSeed.text,
+        playerName: origin.displayName,
+        avatarColor: origin.avatarColor,
+        avatarEmoji: origin.avatarEmoji,
+      });
+      // Walk each subsequent stage. The router uses (i-1+n)%n: player i at
+      // stage s saw player (i-1)'s stage-(s-1) submission. So to follow
+      // origin's chain, at each stage we shift +1 from the previous stage's
+      // actor.
+      let currentIdx = originIdx;
+      for (let s = 1; s < def.stages.length; s++) {
+        currentIdx = (currentIdx + 1) % n;
+        const actor = players[currentIdx];
+        const sub = byPlayerStage.get(actor.id)?.get(s);
+        if (!sub) break;
+        const stageDef = def.stages[s];
+        entries.push({
+          kind: stageDef.kind === "DRAWING" ? "DRAWING" : "TEXT",
+          text: sub.text,
+          playerName: actor.displayName,
+          avatarColor: actor.avatarColor,
+          avatarEmoji: actor.avatarEmoji,
+        });
+      }
+      chains.push({ originPlayerName: origin.displayName, entries });
+    }
+    // Chain games: no individual vote targets, we just play the reveal and
+    // go to VOTE where players pick their favorite chain (by origin player
+    // submission id — we use the stage-0 seed submission id as the key).
+    reveal = [];
+  } else if (def.flow === "combo" && def.stages) {
+    // Mash-Up Doodle: pair each stage-0 icon with a stage-1 slogan from a
+    // different player (cyclic shift). Display shown as paired cards; the
+    // vote target is the icon (stage 0) submission's id.
+    const players = await prisma.player.findMany({
+      where: { roomId: room.id, isAudience: false, connected: true },
+      orderBy: { joinedAt: "asc" },
+    });
+    const n = players.length;
+    const stage0 = submissions.filter((s) => s.stage === 0);
+    const stage1 = submissions.filter((s) => s.stage === 1);
+    const byPlayerS1 = new Map(stage1.map((s) => [s.playerId, s]));
+    mashups = [];
+    for (let i = 0; i < n; i++) {
+      const iconPlayer = players[i];
+      const icon = stage0.find((s) => s.playerId === iconPlayer.id);
+      if (!icon) continue;
+      // Shift sloganist by +1 so you never pair your own icon with your own slogan.
+      const sloganPlayer = players[(i + 1) % n];
+      const slogan = byPlayerS1.get(sloganPlayer.id);
+      if (!slogan) continue;
+      mashups.push({
+        id: icon.id,
+        iconText: icon.text,
+        iconAuthorId: iconPlayer.id,
+        iconAuthorName: iconPlayer.displayName,
+        sloganText: slogan.text,
+        sloganAuthorId: sloganPlayer.id,
+        sloganAuthorName: sloganPlayer.displayName,
+      });
+    }
+    // Use mashup list as reveal items so the vote handler can find them by id.
+    reveal = mashups.map((m) => ({
+      submissionId: m.id,
+      authorId: m.iconAuthorId,
+      authorName: m.iconAuthorName,
+      text: m.iconText,
+      isTruth: false,
+    }));
+  } else {
+    const items: RevealItem[] = submissions.map((s) => ({
+      submissionId: s.id,
+      authorId: s.playerId,
+      authorName: s.player.displayName,
+      text: s.text,
+      isTruth: false,
+    }));
+    // For fib games, inject the hidden truth as one of the items.
+    if (def.scoring === "fib" && room.round.promptTruth) {
+      items.push({
+        submissionId: null,
+        authorId: null,
+        authorName: null,
+        text: room.round.promptTruth,
+        isTruth: true,
+      });
+    }
+    reveal = shuffle(items);
   }
-  const reveal = shuffle(items);
 
   const revealSeconds = def.revealSeconds ?? DEFAULTS.REVEAL_SECONDS;
   room.phase = "REVEAL";
   room.round.phaseEndsAt = Date.now() + revealSeconds * 1000;
   room.round.reveal = reveal;
+  room.round.chains = chains;
+  room.round.mashups = mashups;
   // Quiz games unveil the truth during REVEAL (no separate vote phase).
   room.round.truthRevealed = def.flow === "quiz";
   await prisma.round.update({
@@ -565,6 +842,66 @@ async function enterScorePhase(io: IO, room: LiveRoom) {
       const reward = Math.min(1000, (memberIds.length - 1) * 200 + 200);
       for (const pid of memberIds) add(pid, reward, "herd_matched");
     }
+  } else if (def.scoring === "trace") {
+    // Trace Race: client submits {score, accuracy, timeMs}. Award the raw
+    // score plus participation + a top-finisher bonus.
+    interface TracePayload {
+      playerId: string;
+      score: number;
+      accuracy: number;
+      timeMs: number;
+    }
+    const parsed: TracePayload[] = [];
+    for (const s of submissions) {
+      try {
+        const p = JSON.parse(s.text);
+        parsed.push({
+          playerId: s.playerId,
+          score: Math.max(0, Math.min(9999, Math.round(Number(p?.score) || 0))),
+          accuracy: Math.max(0, Math.min(100, Math.round(Number(p?.accuracy) || 0))),
+          timeMs: Math.max(0, Math.min(60_000, Math.round(Number(p?.timeMs) || 0))),
+        });
+      } catch {
+        parsed.push({ playerId: s.playerId, score: 0, accuracy: 0, timeMs: 0 });
+      }
+      add(s.playerId, 50, "trace_participation");
+    }
+    for (const p of parsed) {
+      if (p.score > 0) add(p.playerId, p.score, "trace_score");
+    }
+    const ranked = [...parsed].sort((a, b) => b.score - a.score);
+    if (ranked.length && ranked[0].score > 0) {
+      add(ranked[0].playerId, 500, "trace_top");
+      if (ranked.length > 1 && ranked[1].score > 0)
+        add(ranked[1].playerId, 250, "trace_second");
+    }
+  } else if (def.scoring === "color") {
+    // Slider Wars: client submits {r,g,b}. Target color comes from promptTruth
+    // as "r,g,b". Score by proximity (linear inverse of Euclidean distance).
+    const target = parseRgb(room.round.promptTruth ?? "");
+    for (const s of submissions) {
+      let r = 0,
+        g = 0,
+        b = 0;
+      try {
+        const p = JSON.parse(s.text);
+        r = Math.max(0, Math.min(255, Math.round(Number(p?.r) || 0)));
+        g = Math.max(0, Math.min(255, Math.round(Number(p?.g) || 0)));
+        b = Math.max(0, Math.min(255, Math.round(Number(p?.b) || 0)));
+      } catch {
+        // leave zeros
+      }
+      const dr = r - target.r;
+      const dg = g - target.g;
+      const db = b - target.b;
+      const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+      // Max distance = sqrt(3*255^2) ≈ 441. Map to 0..1000 (higher = closer).
+      const points = Math.max(0, Math.round(1000 - (dist / 441) * 1000));
+      add(s.playerId, 50, "color_participation");
+      if (points > 0) add(s.playerId, points, "color_proximity");
+      // Bullseye: within ~25 in combined Euclidean distance.
+      if (dist <= 25) add(s.playerId, 500, "color_bullseye");
+    }
   } else if (def.scoring === "reaction") {
     // Tap Rally: parse each player's TAP payload and award proportional points.
     // The top scorer gets a round bonus. Audience players (if any submitted)
@@ -596,6 +933,96 @@ async function enterScorePhase(io: IO, room: LiveRoom) {
       add(ranked[0].playerId, 500, "tap_top");
       if (ranked.length > 1 && ranked[1].score > 0) {
         add(ranked[1].playerId, 250, "tap_second");
+      }
+    }
+  } else if (def.scoring === "chain") {
+    // Stroke of Genius: every participant across every stage gets a
+    // participation kicker; the winning chain's origin + every actor in it
+    // split the big prize.
+    for (const s of submissions) add(s.playerId, 50, "chain_participation");
+    const chains = room.round.chains ?? [];
+    // Map each chain's vote target (seed submission id) → its actor playerIds.
+    // We locate the seed submission by matching origin name → seed row.
+    const seedIdByOrigin = new Map<string, { id: string; actorIds: string[] }>();
+    const submissionsByStagePlayer = new Map<string, typeof submissions[number]>();
+    for (const s of submissions) submissionsByStagePlayer.set(`${s.stage}:${s.playerId}`, s);
+    // Rebuild the actor order from players (same as buildStageTargets).
+    const coreOrdered = players
+      .filter((p) => !p.isAudience)
+      .sort((a, b) => a.joinedAt.getTime() - b.joinedAt.getTime());
+    for (let i = 0; i < coreOrdered.length; i++) {
+      const origin = coreOrdered[i];
+      const seed = submissionsByStagePlayer.get(`0:${origin.id}`);
+      if (!seed) continue;
+      const actorIds: string[] = [origin.id];
+      let idx = i;
+      const stageCount = def.stages?.length ?? 1;
+      for (let s = 1; s < stageCount; s++) {
+        idx = (idx + 1) % coreOrdered.length;
+        actorIds.push(coreOrdered[idx].id);
+      }
+      seedIdByOrigin.set(origin.id, { id: seed.id, actorIds });
+    }
+    // Tally votes by seed submission id.
+    const tally = new Map<string, number>();
+    for (const v of votes) {
+      if (!v.submissionId) continue;
+      const w = audienceSet.has(v.voterId) ? DEFAULTS.AUDIENCE_VOTE_WEIGHT : 1;
+      tally.set(v.submissionId, (tally.get(v.submissionId) ?? 0) + w);
+    }
+    let topSeedId: string | null = null;
+    let topScore = 0;
+    for (const [sid, score] of tally.entries()) {
+      if (score > topScore) {
+        topScore = score;
+        topSeedId = sid;
+      }
+    }
+    // Every vote cast on a chain rewards every actor in that chain.
+    for (const [seedId, weight] of tally.entries()) {
+      const meta = Array.from(seedIdByOrigin.values()).find((m) => m.id === seedId);
+      if (!meta) continue;
+      const reward = Math.round(200 * weight);
+      for (const pid of meta.actorIds) add(pid, reward, "chain_votes");
+    }
+    if (topSeedId) {
+      const winning = Array.from(seedIdByOrigin.values()).find((m) => m.id === topSeedId);
+      if (winning) for (const pid of winning.actorIds) add(pid, 500, "chain_winning");
+    }
+    void chains;
+  } else if (def.scoring === "combo") {
+    // Mash-Up Doodle: each mashup card bundles an icon author + a slogan
+    // author. Votes cast on a card reward both contributors, with a top-pair
+    // bonus to the winning duo.
+    const mashups = room.round.mashups ?? [];
+    const cardById = new Map(mashups.map((m) => [m.id, m]));
+    for (const s of submissions) add(s.playerId, 50, "combo_participation");
+    const tally = new Map<string, number>();
+    for (const v of votes) {
+      if (!v.submissionId) continue;
+      const w = audienceSet.has(v.voterId) ? DEFAULTS.AUDIENCE_VOTE_WEIGHT : 1;
+      tally.set(v.submissionId, (tally.get(v.submissionId) ?? 0) + w);
+    }
+    let topId: string | null = null;
+    let topScore = 0;
+    for (const [id, score] of tally.entries()) {
+      if (score > topScore) {
+        topScore = score;
+        topId = id;
+      }
+    }
+    for (const [id, weight] of tally.entries()) {
+      const card = cardById.get(id);
+      if (!card) continue;
+      const reward = Math.round(250 * weight);
+      add(card.iconAuthorId, reward, "combo_votes");
+      add(card.sloganAuthorId, reward, "combo_votes");
+    }
+    if (topId) {
+      const top = cardById.get(topId);
+      if (top) {
+        add(top.iconAuthorId, 750, "combo_top");
+        add(top.sloganAuthorId, 750, "combo_top");
       }
     }
   } else if (def.scoring === "take") {
@@ -950,6 +1377,28 @@ export async function playerSubmit(
     }
     const value = Math.max(0, Math.min(100, Math.round(Number(parsed.value) || 0)));
     storedText = JSON.stringify({ value });
+  } else if (def.submissionKind === "TRACE") {
+    let parsed: { score?: unknown; accuracy?: unknown; timeMs?: unknown };
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Trace payload was malformed.");
+    }
+    const score = Math.max(0, Math.min(9999, Math.round(Number(parsed.score) || 0)));
+    const accuracy = Math.max(0, Math.min(100, Math.round(Number(parsed.accuracy) || 0)));
+    const timeMs = Math.max(0, Math.min(60_000, Math.round(Number(parsed.timeMs) || 0)));
+    storedText = JSON.stringify({ score, accuracy, timeMs });
+  } else if (def.submissionKind === "COLOR") {
+    let parsed: { r?: unknown; g?: unknown; b?: unknown };
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Color payload was malformed.");
+    }
+    const r = Math.max(0, Math.min(255, Math.round(Number(parsed.r) || 0)));
+    const g = Math.max(0, Math.min(255, Math.round(Number(parsed.g) || 0)));
+    const b = Math.max(0, Math.min(255, Math.round(Number(parsed.b) || 0)));
+    storedText = JSON.stringify({ r, g, b });
   } else if (def.submissionKind === "TAP") {
     let parsed: { score?: unknown; hits?: unknown; misses?: unknown; fastestMs?: unknown };
     try {
@@ -964,19 +1413,34 @@ export async function playerSubmit(
     storedText = JSON.stringify({ score, hits, misses, fastestMs });
   }
 
+  const stage = room.round.stage;
+  // For multi-stage games the active kind depends on the stage definition,
+  // not the game's default submissionKind.
+  const stageKind =
+    def.stages && def.stages[stage]
+      ? def.stages[stage].kind === "DRAWING"
+        ? "DRAWING"
+        : "TEXT"
+      : def.submissionKind;
+
   const existing = await prisma.submission.findUnique({
-    where: { roundId_playerId: { roundId: room.round.id, playerId } },
+    where: {
+      roundId_playerId_stage: { roundId: room.round.id, playerId, stage },
+    },
   });
   const isFirstSubmission = !existing;
 
   await prisma.submission.upsert({
-    where: { roundId_playerId: { roundId: room.round.id, playerId } },
-    update: { text: storedText, kind: def.submissionKind },
+    where: {
+      roundId_playerId_stage: { roundId: room.round.id, playerId, stage },
+    },
+    update: { text: storedText, kind: stageKind },
     create: {
       roundId: room.round.id,
       playerId,
+      stage,
       text: storedText,
-      kind: def.submissionKind,
+      kind: stageKind,
     },
   });
 
@@ -989,7 +1453,7 @@ export async function playerSubmit(
     (def.scoring === "take" || def.scoring === "fib")
   ) {
     const submittedCount = await prisma.submission.count({
-      where: { roundId: room.round.id },
+      where: { roundId: room.round.id, stage },
     });
     // submittedCount already includes the row we just created.
     const rank = submittedCount; // 1 = first, 2 = second, 3 = third
@@ -1012,10 +1476,16 @@ export async function playerSubmit(
     prisma.player.count({
       where: { roomId: room.id, isAudience: false, connected: true },
     }),
-    prisma.submission.count({ where: { roundId: room.round.id } }),
+    prisma.submission.count({ where: { roundId: room.round.id, stage } }),
   ]);
   if (subs >= corePlayers) {
-    await enterRevealPhase(io, room);
+    // Multi-stage games advance through their stages; single-stage games go
+    // straight to REVEAL.
+    if (def.stages && stage < def.stages.length - 1) {
+      await advanceSubmitStage(io, room);
+    } else {
+      await enterRevealPhase(io, room);
+    }
   } else {
     await broadcast(io, room);
   }
@@ -1030,7 +1500,7 @@ export async function playerVote(
   if (!room.round || room.phase !== "VOTE")
     throw new Error("Voting isn't open right now.");
   const def = getGame(room.round.gameId);
-  if (def.flow !== "standard")
+  if (def.flow !== "standard" && def.flow !== "chain" && def.flow !== "combo")
     throw new Error("This game doesn't use voting.");
   const voter = await prisma.player.findUnique({ where: { id: voterId } });
   if (!voter) throw new Error("Voter not found.");

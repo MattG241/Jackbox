@@ -46,6 +46,8 @@ enum SubmissionKind {
   QUIZ
   TAP
   PERCENT
+  TRACE
+  COLOR
 }
 
 model Room {
@@ -114,6 +116,10 @@ model Round {
   criterionId  String
   phaseEndsAt  DateTime?
   createdAt    DateTime   @default(now())
+  // For multi-stage games (e.g. Stroke of Genius, Mash-Up Doodle). 0 for
+  // single-stage games.
+  stage        Int        @default(0)
+  totalStages  Int        @default(1)
 
   match       Match        @relation(fields: [matchId], references: [id], onDelete: Cascade)
   prompt      Prompt       @relation(fields: [promptId], references: [id])
@@ -166,14 +172,18 @@ model Submission {
   // TEXT: the raw answer. DRAWING: JSON serialized Drawing.
   // QUIZ: JSON { choiceIndex: number, wager: number }.
   // TAP: JSON { score: number, hits: number, misses: number, fastestMs: number }.
+  // TRACE: JSON { score: number, accuracy: number }.
+  // COLOR: JSON { r: number, g: number, b: number }.
   text      String
+  // Stage within a multi-stage round (0 for single-stage games).
+  stage     Int            @default(0)
   createdAt DateTime       @default(now())
 
   round  Round  @relation(fields: [roundId], references: [id], onDelete: Cascade)
   player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
   votes  Vote[]
 
-  @@unique([roundId, playerId])
+  @@unique([roundId, playerId, stage])
   @@index([roundId])
 }
 
