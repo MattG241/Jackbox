@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRoomStore } from "@/stores/useRoomStore";
 import { getSocket } from "@/lib/socketClient";
 import { Countdown } from "./Countdown";
@@ -135,9 +135,18 @@ function LobbyPanel({
                 key={p.id}
                 className="flex items-center justify-between rounded-xl bg-white/5 p-2.5 text-sm"
               >
-                <span className="truncate font-medium">
-                  {p.displayName}
-                  {p.isHost && <span className="ml-2 text-xs text-neon">HOST</span>}
+                <span className="flex min-w-0 items-center gap-2">
+                  <span
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-base"
+                    style={{ background: p.avatarColor }}
+                    aria-hidden
+                  >
+                    {p.avatarEmoji}
+                  </span>
+                  <span className="truncate font-medium">
+                    {p.displayName}
+                    {p.isHost && <span className="ml-2 text-xs text-neon">HOST</span>}
+                  </span>
                 </span>
                 <span
                   className={`h-2 w-2 rounded-full ${p.connected ? "bg-neon" : "bg-white/30"}`}
@@ -255,9 +264,18 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
   const isTap = r.flow === "reaction";
   const isQuiz = r.flow === "quiz";
   const isDrawing = r.submissionKind === "DRAWING";
+  const isPercent = game?.scoring === "percent";
+  const isHerd = game?.scoring === "herd";
 
+  const isFinalRound = r.number === r.total;
   return (
     <section className="cc-card mx-auto w-full max-w-4xl p-10 text-center">
+      {isFinalRound && (
+        <div className="mx-auto mb-3 inline-flex items-center gap-2 rounded-full border border-ember/60 bg-ember/15 px-4 py-1 text-xs uppercase tracking-widest text-ember">
+          <span className="h-1.5 w-1.5 animate-pulseSoft rounded-full bg-ember" />
+          Final Round — all points count 2×
+        </div>
+      )}
       <div className="flex items-center justify-center gap-3 text-sm text-mist/60">
         <span>{game?.name}</span>
         <span>•</span>
@@ -275,6 +293,10 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
       <p className="mt-4 text-mist/60">
         {isTap
           ? "Phones are the race track. Tap everything that pops."
+          : isPercent
+          ? "Slide to your best guess. Closest to the real number wins."
+          : isHerd
+          ? "Type the first word the room would agree on. Match the herd, bank the points."
           : isQuiz
           ? "Pick your answer and set your wager."
           : isDrawing
@@ -285,7 +307,7 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
           ? "Take out your phones. The criterion drops at voting time."
           : `Write the ${game?.name.toLowerCase()}.`}
       </p>
-      {isQuiz && r.choices && (
+      {isQuiz && !isPercent && !isHerd && r.choices && (
         <ul className="mx-auto mt-6 grid max-w-2xl gap-2 sm:grid-cols-2">
           {r.choices.map((c, i) => (
             <li
@@ -304,10 +326,17 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
         {snapshot.players.map((p) => (
           <span
             key={p.id}
-            className={`cc-chip ${
+            className={`cc-chip flex items-center gap-2 ${
               r.submittedPlayerIds.includes(p.id) ? "!bg-neon/20 !text-neon" : ""
             }`}
           >
+            <span
+              className="grid h-5 w-5 place-items-center rounded-full text-sm"
+              style={{ background: p.avatarColor }}
+              aria-hidden
+            >
+              {p.avatarEmoji}
+            </span>
             {p.displayName}
             {r.submittedPlayerIds.includes(p.id) ? " ✓" : " …"}
           </span>
@@ -323,6 +352,113 @@ function RevealPanel({ game }: { game: GameCard | null }) {
   const r = snapshot.round;
   const isQuiz = r.flow === "quiz";
   const isDrawing = r.submissionKind === "DRAWING";
+  const isPercent = game?.scoring === "percent";
+  const isHerd = game?.scoring === "herd";
+
+  if (isPercent) {
+    const truthNum = Number(r.truth ?? "0");
+    const guesses = r.reveal
+      .map((item) => {
+        const v = parsePercentGuess(item.text);
+        return { item, value: v, diff: Math.abs(v - truthNum) };
+      })
+      .sort((a, b) => a.diff - b.diff);
+    return (
+      <section className="cc-card mx-auto w-full max-w-4xl p-10 text-center">
+        <div className="text-sm text-mist/60">
+          {game?.name} • Round {r.number}
+        </div>
+        <h2 className="mt-2 text-2xl font-semibold sm:text-3xl">{r.prompt}</h2>
+        {r.truth && (
+          <div className="mx-auto mt-6 inline-flex flex-col items-center rounded-2xl border border-orchid/40 bg-orchid/10 px-10 py-5">
+            <div className="text-xs uppercase tracking-widest text-orchid">
+              The real answer
+            </div>
+            <div className="mt-1 text-6xl font-semibold text-orchid">
+              {truthNum}
+              <span className="text-3xl text-orchid/60">%</span>
+            </div>
+          </div>
+        )}
+        {guesses.length > 0 && (
+          <ul className="mx-auto mt-6 grid max-w-2xl gap-2 sm:grid-cols-2">
+            {guesses.map(({ item, value, diff }, i) => (
+              <li
+                key={item.submissionId ?? i}
+                className={`flex items-center justify-between rounded-xl border px-4 py-3 ${
+                  diff <= 3
+                    ? "border-neon/60 bg-neon/15"
+                    : "border-white/10 bg-white/5"
+                }`}
+              >
+                <span className="text-sm text-mist/70">
+                  {diff <= 3 ? "BULLSEYE" : `Off by ${diff}`}
+                </span>
+                <span className="font-mono text-lg">{value}%</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    );
+  }
+
+  if (isHerd) {
+    // Group submissions by first word (matches server scoring) so the herd
+    // clusters pop visually.
+    const groups = new Map<string, string[]>();
+    for (const item of r.reveal) {
+      const key = item.text
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim()
+        .split(/\s+/)[0] || "—";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(item.text);
+    }
+    const sortedGroups = [...groups.entries()].sort(
+      (a, b) => b[1].length - a[1].length
+    );
+    return (
+      <section className="cc-card mx-auto w-full max-w-4xl p-10 text-center">
+        <div className="text-sm text-mist/60">
+          {game?.name} • Round {r.number}
+        </div>
+        <h2 className="mt-2 text-2xl font-semibold sm:text-3xl">{r.prompt}</h2>
+        <div className="mt-6 grid gap-3 sm:grid-cols-2">
+          {sortedGroups.map(([key, items], i) => {
+            const isHerd = items.length >= 2;
+            return (
+              <div
+                key={key}
+                className={`cc-card border-white/10 p-5 text-left animate-floaty ${
+                  isHerd ? "!border-sol/60 !bg-sol/10" : ""
+                }`}
+                style={{ animationDelay: `${i * 120}ms` }}
+              >
+                <div className="flex items-center justify-between text-xs uppercase tracking-widest">
+                  <span className={isHerd ? "text-sol" : "text-mist/50"}>
+                    {isHerd ? "Herd" : "Lone wolf"}
+                  </span>
+                  <span className="font-mono text-mist/70">
+                    ×{items.length}
+                  </span>
+                </div>
+                <ul className="mt-2 space-y-1">
+                  {items.map((t, j) => (
+                    <li key={j} className="text-base">
+                      {t}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="cc-card mx-auto w-full max-w-5xl p-10">
       <div className="text-center text-sm text-mist/60">
@@ -394,6 +530,17 @@ function RevealPanel({ game }: { game: GameCard | null }) {
   );
 }
 
+function parsePercentGuess(text: string): number {
+  try {
+    const parsed = JSON.parse(text);
+    const v = Number(parsed?.value);
+    if (Number.isFinite(v)) return Math.max(0, Math.min(100, Math.round(v)));
+  } catch {
+    // fall through
+  }
+  return 0;
+}
+
 function VotePanel({ game }: { game: GameCard | null }) {
   const { snapshot } = useRoomStore();
   if (!snapshot?.round) return null;
@@ -453,7 +600,15 @@ function ScorePanel() {
   const summary = r.roundSummary ?? [];
   const leaderboard = [...snapshot.players].sort((a, b) => b.score - a.score);
   const truthItem = r.reveal.find((item) => item.isTruth);
-  const quizTruth = r.flow === "quiz" ? r.truth : null;
+  const game = currentGame(snapshot);
+  const isPercent = game?.scoring === "percent";
+  const quizTruth =
+    r.flow === "quiz"
+      ? isPercent && r.truth
+        ? `${r.truth}%`
+        : r.truth
+      : null;
+  const playerById = new Map(snapshot.players.map((p) => [p.id, p]));
   return (
     <section className="mx-auto grid w-full max-w-5xl gap-6 md:grid-cols-2">
       <div className="cc-card p-6">
@@ -472,15 +627,29 @@ function ScorePanel() {
         )}
         <ul className="mt-3 space-y-2">
           {summary.length === 0 && <li className="text-mist/60">No points scored.</li>}
-          {summary.map((s) => (
-            <li
-              key={s.playerId}
-              className="flex items-center justify-between rounded-lg bg-white/5 p-3"
-            >
-              <span className="font-medium">{s.name}</span>
-              <span className="font-mono text-neon">+{s.delta}</span>
-            </li>
-          ))}
+          {summary.map((s) => {
+            const p = playerById.get(s.playerId);
+            return (
+              <li
+                key={s.playerId}
+                className="flex items-center justify-between rounded-lg bg-white/5 p-3"
+              >
+                <span className="flex items-center gap-3">
+                  {p && (
+                    <span
+                      className="grid h-7 w-7 place-items-center rounded-full text-base"
+                      style={{ background: p.avatarColor }}
+                      aria-hidden
+                    >
+                      {p.avatarEmoji}
+                    </span>
+                  )}
+                  <span className="font-medium">{s.name}</span>
+                </span>
+                <span className="font-mono text-neon">+{s.delta}</span>
+              </li>
+            );
+          })}
         </ul>
       </div>
       <div className="cc-card p-6">
@@ -495,6 +664,13 @@ function ScorePanel() {
             >
               <span className="flex items-center gap-3">
                 <span className="w-6 text-center text-sm text-mist/50">{i + 1}</span>
+                <span
+                  className="grid h-8 w-8 place-items-center rounded-full text-base"
+                  style={{ background: p.avatarColor }}
+                  aria-hidden
+                >
+                  {p.avatarEmoji}
+                </span>
                 <span className="font-medium">{p.displayName}</span>
               </span>
               <span className="font-mono">{p.score}</span>
@@ -511,27 +687,129 @@ function MatchEndPanel() {
   if (!snapshot) return null;
   const leaderboard = [...snapshot.players].sort((a, b) => b.score - a.score);
   const champ = leaderboard[0];
+  const highlights = snapshot.highlights ?? [];
   return (
-    <section className="cc-card mx-auto w-full max-w-3xl p-10 text-center">
-      <div className="text-sm uppercase tracking-[0.35em] text-mist/60">Match complete</div>
-      <h2 className="mt-2 text-4xl font-semibold">
-        {champ ? `${champ.displayName} takes the crown` : "It's a wrap"}
-      </h2>
-      <ul className="mx-auto mt-6 max-w-md space-y-2">
-        {leaderboard.map((p, i) => (
-          <li
-            key={p.id}
-            className="flex items-center justify-between rounded-lg bg-white/5 p-3"
+    <section className="relative mx-auto w-full max-w-5xl">
+      <ConfettiBurst />
+      <div className="cc-card relative z-10 overflow-hidden p-10 text-center">
+        <div className="text-sm uppercase tracking-[0.35em] text-mist/60">Match complete</div>
+        {champ && (
+          <div
+            className="mx-auto mt-4 grid h-28 w-28 place-items-center rounded-full text-5xl animate-floaty"
+            style={{
+              background: champ.avatarColor,
+              boxShadow: `0 0 60px ${champ.avatarColor}80`,
+            }}
+            aria-hidden
           >
-            <span>
-              {i + 1}. {p.displayName}
-            </span>
-            <span className="font-mono">{p.score}</span>
-          </li>
-        ))}
-      </ul>
-      <p className="mt-6 text-sm text-mist/60">Heading back to the lobby in a moment.</p>
+            {champ.avatarEmoji}
+          </div>
+        )}
+        <h2 className="mt-4 text-4xl font-semibold sm:text-5xl">
+          {champ ? `${champ.displayName} takes the crown` : "It's a wrap"}
+        </h2>
+        {champ && (
+          <div className="mt-1 text-lg text-mist/70">
+            <span className="font-mono text-neon">{champ.score.toLocaleString()}</span> points
+          </div>
+        )}
+        {highlights.length > 0 && (
+          <div className="mt-8">
+            <div className="text-xs uppercase tracking-[0.3em] text-mist/50">
+              Match Awards
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {highlights.map((h, i) => (
+                <div
+                  key={h.id}
+                  className="cc-card flex items-center gap-3 border-white/10 p-4 text-left animate-floaty"
+                  style={{ animationDelay: `${i * 120}ms` }}
+                >
+                  <div
+                    className="grid h-12 w-12 shrink-0 place-items-center rounded-full text-2xl"
+                    style={{ background: h.avatarColor }}
+                    aria-hidden
+                  >
+                    {h.avatarEmoji}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs uppercase tracking-wider text-sol">
+                      {h.title}
+                    </div>
+                    <div className="truncate font-semibold">{h.playerName}</div>
+                    <div className="text-xs text-mist/60">{h.detail}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        <ul className="mx-auto mt-8 max-w-md space-y-2 text-left">
+          {leaderboard.map((p, i) => (
+            <li
+              key={p.id}
+              className={`flex items-center justify-between rounded-lg p-3 ${
+                i === 0 ? "bg-ember/20" : "bg-white/5"
+              }`}
+            >
+              <span className="flex items-center gap-3">
+                <span className="w-6 text-center text-sm text-mist/50">{i + 1}</span>
+                <span
+                  className="grid h-7 w-7 place-items-center rounded-full text-base"
+                  style={{ background: p.avatarColor }}
+                  aria-hidden
+                >
+                  {p.avatarEmoji}
+                </span>
+                <span>{p.displayName}</span>
+              </span>
+              <span className="font-mono">{p.score}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-6 text-sm text-mist/60">Heading back to the lobby in a moment.</p>
+      </div>
     </section>
+  );
+}
+
+// Lightweight CSS confetti — no runtime deps. Each piece is a div with a
+// keyframed fall + wobble, randomized at mount time.
+function ConfettiBurst() {
+  const pieces = useMemo(() => {
+    const palette = ["#ff4f7b", "#ffd36e", "#7cf8d0", "#6fb3ff", "#b080ff", "#ff8a5b"];
+    return Array.from({ length: 60 }).map((_, i) => ({
+      id: i,
+      left: Math.random() * 100,
+      delay: Math.random() * 2.5,
+      duration: 3.5 + Math.random() * 3,
+      color: palette[i % palette.length],
+      rotate: Math.floor(Math.random() * 360),
+      size: 6 + Math.floor(Math.random() * 6),
+    }));
+  }, []);
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute inset-0 overflow-hidden"
+    >
+      {pieces.map((p) => (
+        <span
+          key={p.id}
+          className="absolute -top-4 block animate-confetti"
+          style={{
+            left: `${p.left}%`,
+            width: p.size,
+            height: p.size * 1.6,
+            background: p.color,
+            transform: `rotate(${p.rotate}deg)`,
+            animationDelay: `${p.delay}s`,
+            animationDuration: `${p.duration}s`,
+            borderRadius: 2,
+          }}
+        />
+      ))}
+    </div>
   );
 }
 

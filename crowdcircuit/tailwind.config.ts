@@ -26,6 +26,7 @@ const config: Config = {
       animation: {
         pulseSoft: "pulseSoft 2.2s ease-in-out infinite",
         floaty: "floaty 6s ease-in-out infinite",
+        confetti: "confetti linear infinite",
       },
       keyframes: {
         pulseSoft: {
@@ -35,6 +36,11 @@ const config: Config = {
         floaty: {
           "0%, 100%": { transform: "translateY(0)" },
           "50%": { transform: "translateY(-6px)" },
+        },
+        confetti: {
+          "0%": { transform: "translate3d(0,-10%,0) rotate(0deg)", opacity: "1" },
+          "60%": { opacity: "1" },
+          "100%": { transform: "translate3d(0,120vh,0) rotate(720deg)", opacity: "0.2" },
         },
       },
     },

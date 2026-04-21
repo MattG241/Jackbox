@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const { hostName, familyMode, streamerMode } = parsed.data;
+  const { hostName, familyMode, streamerMode, avatarColor, avatarEmoji } = parsed.data;
   const nameCheck = isDisplayNameOk(hostName, familyMode);
   if (!nameCheck.ok) {
     return NextResponse.json({ error: nameCheck.reason }, { status: 400 });
@@ -44,6 +44,8 @@ export async function POST(req: NextRequest) {
             displayName: nameCheck.cleaned,
             sessionToken,
             isAudience: false,
+            ...(avatarColor ? { avatarColor } : {}),
+            ...(avatarEmoji ? { avatarEmoji } : {}),
           },
         },
       },

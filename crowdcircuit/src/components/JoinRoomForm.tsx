@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { saveSession } from "@/lib/session";
+import { AVATAR_COLORS, AVATAR_EMOJIS } from "@/lib/avatars";
+import { AvatarPicker } from "./AvatarPicker";
 
 export function JoinRoomForm() {
   const router = useRouter();
@@ -12,6 +14,12 @@ export function JoinRoomForm() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audienceOffered, setAudienceOffered] = useState(false);
+  const [avatarColor, setAvatarColor] = useState(
+    AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)].color
+  );
+  const [avatarEmoji, setAvatarEmoji] = useState(
+    AVATAR_EMOJIS[Math.floor(Math.random() * AVATAR_EMOJIS.length)]
+  );
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -24,7 +32,7 @@ export function JoinRoomForm() {
       const res = await fetch(`/api/rooms/${normalized}/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ displayName, asAudience }),
+        body: JSON.stringify({ displayName, asAudience, avatarColor, avatarEmoji }),
       });
       const json = await res.json();
       if (!res.ok) {
@@ -68,6 +76,14 @@ export function JoinRoomForm() {
         maxLength={20}
         required
       />
+      <div className="mt-3">
+        <AvatarPicker
+          color={avatarColor}
+          emoji={avatarEmoji}
+          onColor={setAvatarColor}
+          onEmoji={setAvatarEmoji}
+        />
+      </div>
       <label className="mt-3 flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2 text-sm">
         <input
           type="checkbox"

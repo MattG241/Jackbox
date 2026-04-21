@@ -2,6 +2,7 @@ import type { Server } from "socket.io";
 import { prisma } from "@/lib/db";
 import type {
   GameCard,
+  MatchHighlight,
   Phase,
   PublicPlayer,
   RevealItem,
@@ -23,6 +24,11 @@ export const DEFAULTS = {
   VOTE_SECONDS: 20,
   SCORE_SECONDS: 8,
   AUDIENCE_VOTE_WEIGHT: 0.35,
+  // Jackbox-style final-round drama: every point scored in the last round
+  // counts double, so a late comeback is always possible.
+  FINAL_ROUND_MULTIPLIER: 2,
+  // Speed bonus — first three submitters in take/fib rounds grab a kicker.
+  SPEED_BONUSES: [120, 80, 40],
 };
 
 type IO = Server<ClientToServerEvents, ServerToClientEvents>;
@@ -58,6 +64,9 @@ interface LiveRoom {
   } | null;
   phaseTimer: NodeJS.Timeout | null;
   sockets: Set<string>;
+  // Computed on MATCH_END, then broadcast in the snapshot so the host TV can
+  // render MVP awards. Cleared when the room returns to LOBBY.
+  highlights: MatchHighlight[];
 }
 
 const rooms = new Map<string, LiveRoom>(); // keyed by room code
@@ -95,6 +104,7 @@ export async function ensureRoomLoaded(code: string): Promise<LiveRoom | null> {
     round: null,
     phaseTimer: null,
     sockets: new Set(),
+    highlights: [],
   };
   rooms.set(code, live);
   return live;
@@ -138,6 +148,8 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
       isAudience: false,
       connected: p.connected,
       isHost: p.id === room.hostPlayerId,
+      avatarColor: p.avatarColor,
+      avatarEmoji: p.avatarEmoji,
       score: scoreByPlayer.get(p.id) ?? 0,
     }));
 
@@ -178,6 +190,7 @@ export async function buildSnapshot(room: LiveRoom): Promise<RoomSnapshot> {
     players: corePlayers,
     audienceCount,
     games: toGameCards(),
+    highlights: room.highlights,
     round: room.round
       ? {
           number: room.round.number,
@@ -477,9 +490,13 @@ async function enterScorePhase(io: IO, room: LiveRoom) {
 
   const scoreDelta = new Map<string, number>();
   const scoreEvents: { roundId: string; playerId: string; points: number; reason: string }[] = [];
+  // Last-round drama: every point counts double so comebacks are always live.
+  const multiplier =
+    room.round.number === room.round.total ? DEFAULTS.FINAL_ROUND_MULTIPLIER : 1;
   const add = (playerId: string, pts: number, reason: string) => {
-    scoreDelta.set(playerId, (scoreDelta.get(playerId) ?? 0) + pts);
-    scoreEvents.push({ roundId: room.round!.id, playerId, points: pts, reason });
+    const final = pts * multiplier;
+    scoreDelta.set(playerId, (scoreDelta.get(playerId) ?? 0) + final);
+    scoreEvents.push({ roundId: room.round!.id, playerId, points: final, reason });
   };
 
   if (def.scoring === "quiz") {
@@ -504,6 +521,49 @@ async function enterScorePhase(io: IO, room: LiveRoom) {
       }
       // Wrong answers don't deduct (positive-sum scoring keeps it breezy);
       // the upside of a big wager is what makes it interesting.
+    }
+  } else if (def.scoring === "percent") {
+    // Guesspionage: the prompt's `truth` is a 0–100 number. Players submit a
+    // numeric guess; points scale with closeness. Bullseye (≤3 pts off) gets
+    // a big bonus.
+    const target = Math.max(0, Math.min(100, Number(room.round.promptTruth ?? "0")));
+    for (const s of submissions) {
+      let guess = 0;
+      try {
+        const parsed = JSON.parse(s.text);
+        guess = Math.max(0, Math.min(100, Number(parsed?.value) || 0));
+      } catch {
+        guess = 0;
+      }
+      const diff = Math.abs(guess - target);
+      // 0 diff → 1000, 100 diff → 0. Linear falloff is simple and readable.
+      const proximity = Math.max(0, Math.round(1000 - diff * 10));
+      add(s.playerId, 50, "percent_participation");
+      if (proximity > 0) add(s.playerId, proximity, "percent_proximity");
+      if (diff <= 3) add(s.playerId, 500, "percent_bullseye");
+    }
+  } else if (def.scoring === "herd") {
+    // Group Mentality: cluster similar short-text answers by normalized form
+    // and reward players whose answer was picked by the crowd.
+    const norm = (t: string) =>
+      t
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim()
+        .split(/\s+/)[0] ?? "";
+    const groups = new Map<string, string[]>();
+    for (const s of submissions) {
+      const key = norm(s.text);
+      if (!key) continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(s.playerId);
+    }
+    for (const s of submissions) add(s.playerId, 50, "herd_participation");
+    for (const [, memberIds] of groups.entries()) {
+      if (memberIds.length < 2) continue;
+      // Bigger herds = bigger payout: 200 per co-matcher, capped at 1000.
+      const reward = Math.min(1000, (memberIds.length - 1) * 200 + 200);
+      for (const pid of memberIds) add(pid, reward, "herd_matched");
     }
   } else if (def.scoring === "reaction") {
     // Tap Rally: parse each player's TAP payload and award proportional points.
@@ -620,6 +680,7 @@ async function enterScorePhase(io: IO, room: LiveRoom) {
 export async function endMatch(io: IO, room: LiveRoom) {
   clearPhaseTimer(room);
   if (room.matchId) {
+    room.highlights = await computeHighlights(room);
     await prisma.match.update({
       where: { id: room.matchId },
       data: { status: "FINISHED", endedAt: new Date() },
@@ -632,8 +693,187 @@ export async function endMatch(io: IO, room: LiveRoom) {
     room.phase = "LOBBY";
     room.matchId = null;
     room.round = null;
+    room.highlights = [];
     await broadcast(io, room);
-  }, 12_000);
+  }, 20_000);
+}
+
+// MVP awards for the post-match celebration screen. Computed from the match's
+// rounds + score events so the host TV can display a Jackbox-style highlight
+// reel when the final buzzer sounds.
+async function computeHighlights(room: LiveRoom): Promise<MatchHighlight[]> {
+  if (!room.matchId) return [];
+  const [players, rounds, events, submissions, votes] = await Promise.all([
+    prisma.player.findMany({ where: { roomId: room.id } }),
+    prisma.round.findMany({
+      where: { matchId: room.matchId },
+      orderBy: { roundNumber: "asc" },
+    }),
+    prisma.scoreEvent.findMany({
+      where: { round: { matchId: room.matchId } },
+    }),
+    prisma.submission.findMany({
+      where: { round: { matchId: room.matchId } },
+    }),
+    prisma.vote.findMany({
+      where: { round: { matchId: room.matchId } },
+    }),
+  ]);
+  const playerById = new Map(players.map((p) => [p.id, p]));
+  const highlights: MatchHighlight[] = [];
+  const makeAward = (
+    id: string,
+    title: string,
+    playerId: string | null,
+    detail: string
+  ): MatchHighlight => {
+    const player = playerId ? playerById.get(playerId) ?? null : null;
+    return {
+      id,
+      title,
+      playerId,
+      playerName: player?.displayName ?? "—",
+      avatarColor: player?.avatarColor ?? "#ff4f7b",
+      avatarEmoji: player?.avatarEmoji ?? "🏆",
+      detail,
+    };
+  };
+
+  // --- Top Scorer (MVP) ---
+  const totals = new Map<string, number>();
+  for (const e of events)
+    totals.set(e.playerId, (totals.get(e.playerId) ?? 0) + e.points);
+  let mvpId: string | null = null;
+  let mvpScore = -Infinity;
+  for (const [pid, pts] of totals.entries()) {
+    if (pts > mvpScore) {
+      mvpId = pid;
+      mvpScore = pts;
+    }
+  }
+  if (mvpId) {
+    highlights.push(
+      makeAward("mvp", "Champion", mvpId, `${mvpScore.toLocaleString()} pts`)
+    );
+  }
+
+  // --- Biggest Round ---
+  let bigRoundPlayer: string | null = null;
+  let bigRoundDelta = 0;
+  let bigRoundNumber = 0;
+  const byRoundPlayer = new Map<string, Map<string, number>>();
+  for (const e of events) {
+    if (!byRoundPlayer.has(e.roundId)) byRoundPlayer.set(e.roundId, new Map());
+    const inner = byRoundPlayer.get(e.roundId)!;
+    inner.set(e.playerId, (inner.get(e.playerId) ?? 0) + e.points);
+  }
+  for (const round of rounds) {
+    const inner = byRoundPlayer.get(round.id);
+    if (!inner) continue;
+    for (const [pid, pts] of inner.entries()) {
+      if (pts > bigRoundDelta) {
+        bigRoundDelta = pts;
+        bigRoundPlayer = pid;
+        bigRoundNumber = round.roundNumber;
+      }
+    }
+  }
+  if (bigRoundPlayer && bigRoundDelta > 0) {
+    highlights.push(
+      makeAward(
+        "big_round",
+        "Biggest Round",
+        bigRoundPlayer,
+        `+${bigRoundDelta.toLocaleString()} in Round ${bigRoundNumber}`
+      )
+    );
+  }
+
+  // --- Sharpest Voter (fib-truth detections + sharp-voting reasons) ---
+  const sharpScores = new Map<string, number>();
+  for (const e of events) {
+    if (e.reason === "detected_truth" || e.reason === "sharp_voting") {
+      sharpScores.set(e.playerId, (sharpScores.get(e.playerId) ?? 0) + e.points);
+    }
+  }
+  let sharpId: string | null = null;
+  let sharpBest = 0;
+  for (const [pid, pts] of sharpScores.entries()) {
+    if (pts > sharpBest) {
+      sharpBest = pts;
+      sharpId = pid;
+    }
+  }
+  if (sharpId) {
+    highlights.push(
+      makeAward(
+        "sharp_voter",
+        "Sharpest Voter",
+        sharpId,
+        `+${sharpBest.toLocaleString()} pts from clutch picks`
+      )
+    );
+  }
+
+  // --- Master of Fibs (fooled_a_voter totals) ---
+  const fibScores = new Map<string, number>();
+  let fooledTotal = 0;
+  const submissionAuthor = new Map(submissions.map((s) => [s.id, s.playerId]));
+  for (const v of votes) {
+    if (!v.forTruth && v.submissionId) {
+      const author = submissionAuthor.get(v.submissionId);
+      if (author && author !== v.voterId) {
+        fibScores.set(author, (fibScores.get(author) ?? 0) + 1);
+        fooledTotal++;
+      }
+    }
+  }
+  let fibKingId: string | null = null;
+  let fibBest = 0;
+  for (const [pid, n] of fibScores.entries()) {
+    if (n > fibBest) {
+      fibBest = n;
+      fibKingId = pid;
+    }
+  }
+  if (fibKingId && fibBest > 0) {
+    highlights.push(
+      makeAward(
+        "fib_king",
+        "Master of Fibs",
+        fibKingId,
+        `Fooled ${fibBest} of ${fooledTotal} votes`
+      )
+    );
+  }
+
+  // --- Speed Demon: most speed bonuses across the match ---
+  const speedScores = new Map<string, number>();
+  for (const e of events) {
+    if (e.reason.startsWith("speed_bonus")) {
+      speedScores.set(e.playerId, (speedScores.get(e.playerId) ?? 0) + e.points);
+    }
+  }
+  let speedId: string | null = null;
+  let speedBest = 0;
+  for (const [pid, pts] of speedScores.entries()) {
+    if (pts > speedBest) {
+      speedBest = pts;
+      speedId = pid;
+    }
+  }
+  if (speedId) {
+    highlights.push(
+      makeAward(
+        "speed_demon",
+        "Speed Demon",
+        speedId,
+        `+${speedBest.toLocaleString()} in early-bird bonuses`
+      )
+    );
+  }
+
+  return highlights;
 }
 
 export async function hostNextPhase(io: IO, room: LiveRoom, requesterPlayerId: string) {
@@ -701,6 +941,15 @@ export async function playerSubmit(
       Math.min(1000, Math.round(Number(parsed.wager) || 100))
     );
     storedText = JSON.stringify({ choice, wager });
+  } else if (def.submissionKind === "PERCENT") {
+    let parsed: { value?: unknown };
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Guess payload was malformed.");
+    }
+    const value = Math.max(0, Math.min(100, Math.round(Number(parsed.value) || 0)));
+    storedText = JSON.stringify({ value });
   } else if (def.submissionKind === "TAP") {
     let parsed: { score?: unknown; hits?: unknown; misses?: unknown; fastestMs?: unknown };
     try {
@@ -715,6 +964,11 @@ export async function playerSubmit(
     storedText = JSON.stringify({ score, hits, misses, fastestMs });
   }
 
+  const existing = await prisma.submission.findUnique({
+    where: { roundId_playerId: { roundId: room.round.id, playerId } },
+  });
+  const isFirstSubmission = !existing;
+
   await prisma.submission.upsert({
     where: { roundId_playerId: { roundId: room.round.id, playerId } },
     update: { text: storedText, kind: def.submissionKind },
@@ -725,6 +979,34 @@ export async function playerSubmit(
       kind: def.submissionKind,
     },
   });
+
+  // Jackbox-style speed bonus for take/fib games — the first three submitters
+  // each round bank a kicker. Awarded once per round per player on their first
+  // submission (edits don't re-trigger it). Reaction/quiz games have their
+  // own pacing pressure, so we skip the bonus there.
+  if (
+    isFirstSubmission &&
+    (def.scoring === "take" || def.scoring === "fib")
+  ) {
+    const submittedCount = await prisma.submission.count({
+      where: { roundId: room.round.id },
+    });
+    // submittedCount already includes the row we just created.
+    const rank = submittedCount; // 1 = first, 2 = second, 3 = third
+    const bonus = DEFAULTS.SPEED_BONUSES[rank - 1];
+    if (bonus) {
+      const multiplier =
+        room.round.number === room.round.total ? DEFAULTS.FINAL_ROUND_MULTIPLIER : 1;
+      await prisma.scoreEvent.create({
+        data: {
+          roundId: room.round.id,
+          playerId,
+          points: bonus * multiplier,
+          reason: `speed_bonus_${rank}`,
+        },
+      });
+    }
+  }
 
   const [corePlayers, subs] = await Promise.all([
     prisma.player.count({

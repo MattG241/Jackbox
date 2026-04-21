@@ -12,7 +12,17 @@
 
 import type { Rating, SubmissionKind } from "@prisma/client";
 
-export type ScoringMode = "take" | "fib" | "quiz" | "reaction";
+export type ScoringMode =
+  | "take"
+  | "fib"
+  | "quiz"
+  | "reaction"
+  // percent: Guesspionage-style. Players guess a percentage (0–100). Scoring is
+  // based on proximity to the real answer; a bullseye lands a big bonus.
+  | "percent"
+  // herd: Group Mentality. Players submit a short text answer to a prompt;
+  // they score based on how many other players matched their answer.
+  | "herd";
 
 // Game flow decides which phases run:
 //   standard : SUBMIT → REVEAL → VOTE → SCORE (take + fib games)
@@ -630,6 +640,134 @@ export const GAMES: Record<string, GameDefinition> = {
         rating: "FAMILY",
         tag: "biology",
       },
+    ],
+  },
+
+  "guesspionage": {
+    id: "guesspionage",
+    name: "Guesspionage",
+    tagline: "Slide to guess. Closest number wins.",
+    description:
+      "A spicy 'what percent of people…' question lands on the TV. Everyone slides to their best guess on their phone. Closer to the real answer = more points. Bullseye within 3% = massive bonus.",
+    scoring: "percent",
+    flow: "quiz",
+    submissionKind: "PERCENT",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "Slide to your guess…",
+    submissionLabel: "Your guess",
+    voteInstruction: () => "",
+    revealKicker: "THE REAL NUMBER IS…",
+    submitSeconds: 30,
+    revealSeconds: 8,
+    accent: "orchid",
+    seedPrompts: [
+      {
+        text: "What percent of people admit they've sung in the shower this week?",
+        truth: "68",
+        rating: "FAMILY",
+        tag: "habit",
+      },
+      {
+        text: "What percent of adults say they regret one item in their closet right now?",
+        truth: "57",
+        rating: "FAMILY",
+        tag: "home",
+      },
+      {
+        text: "What percent of office workers have cried at work at least once?",
+        truth: "44",
+        rating: "STANDARD",
+        tag: "work",
+      },
+      {
+        text: "What percent of people check their phone within five minutes of waking up?",
+        truth: "79",
+        rating: "FAMILY",
+        tag: "tech",
+      },
+      {
+        text: "What percent of people have pretended to be on a call to avoid a conversation?",
+        truth: "51",
+        rating: "FAMILY",
+        tag: "social",
+      },
+      {
+        text: "What percent of people have forgotten someone's name mid-introduction?",
+        truth: "72",
+        rating: "FAMILY",
+        tag: "social",
+      },
+      {
+        text: "What percent of drivers have yelled at traffic even when alone in the car?",
+        truth: "65",
+        rating: "FAMILY",
+        tag: "life",
+      },
+      {
+        text: "What percent of adults admit to having a 'junk drawer' at home?",
+        truth: "85",
+        rating: "FAMILY",
+        tag: "home",
+      },
+      {
+        text: "What percent of people say they'd take a fake sick day if they could?",
+        truth: "48",
+        rating: "STANDARD",
+        tag: "work",
+      },
+      {
+        text: "What percent of people have googled themselves in the last month?",
+        truth: "39",
+        rating: "FAMILY",
+        tag: "tech",
+      },
+      {
+        text: "What percent of adults still sleep with a stuffed animal?",
+        truth: "34",
+        rating: "FAMILY",
+        tag: "life",
+      },
+      {
+        text: "What percent of people admit to eating something off the floor in the last year?",
+        truth: "62",
+        rating: "STANDARD",
+        tag: "habit",
+      },
+    ],
+  },
+
+  "group-mentality": {
+    id: "group-mentality",
+    name: "Group Mentality",
+    tagline: "Think like the room. Match the herd.",
+    description:
+      "Everyone sees the same prompt and types the first answer that comes to mind. Points go to the biggest agreement — the more people matched your answer, the bigger the payout. Lone-wolf answers score nothing.",
+    scoring: "herd",
+    flow: "quiz",
+    submissionKind: "TEXT",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "Type the obvious answer…",
+    submissionLabel: "Your answer",
+    voteInstruction: () => "",
+    revealKicker: "HERD COUNT",
+    submitSeconds: 25,
+    revealSeconds: 10,
+    accent: "sol",
+    seedPrompts: [
+      { text: "Name a fruit that's obviously yellow.", rating: "FAMILY", tag: "word" },
+      { text: "Name a cold thing you'd find in a freezer.", rating: "FAMILY", tag: "word" },
+      { text: "Name a superhero everyone at the table knows.", rating: "FAMILY", tag: "pop" },
+      { text: "Name a sport played on grass.", rating: "FAMILY", tag: "word" },
+      { text: "Name a breakfast food.", rating: "FAMILY", tag: "word" },
+      { text: "Name something you bring to the beach.", rating: "FAMILY", tag: "word" },
+      { text: "Name a farm animal that moos, oinks, or baas.", rating: "FAMILY", tag: "word" },
+      { text: "Name a color that appears in a rainbow.", rating: "FAMILY", tag: "word" },
+      { text: "Name a dance move everyone has tried.", rating: "FAMILY", tag: "pop" },
+      { text: "Name a month that has a major holiday.", rating: "FAMILY", tag: "word" },
+      { text: "Name a vegetable kids universally hate.", rating: "FAMILY", tag: "word" },
+      { text: "Name a common password people shouldn't use.", rating: "STANDARD", tag: "tech" },
     ],
   },
 };

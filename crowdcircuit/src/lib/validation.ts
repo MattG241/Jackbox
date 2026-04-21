@@ -1,15 +1,23 @@
 import { z } from "zod";
+import { AVATAR_COLORS, AVATAR_EMOJIS } from "./avatars";
+
+const avatarColorValues = AVATAR_COLORS.map((c) => c.color) as [string, ...string[]];
+const avatarEmojiValues = AVATAR_EMOJIS as unknown as [string, ...string[]];
 
 export const createRoomSchema = z.object({
   hostName: z.string().min(1).max(20),
   familyMode: z.boolean().optional().default(false),
   streamerMode: z.boolean().optional().default(false),
+  avatarColor: z.enum(avatarColorValues).optional(),
+  avatarEmoji: z.enum(avatarEmojiValues).optional(),
 });
 
 export const joinRoomSchema = z.object({
   code: z.string().length(4),
   displayName: z.string().min(1).max(20),
   asAudience: z.boolean().optional().default(false),
+  avatarColor: z.enum(avatarColorValues).optional(),
+  avatarEmoji: z.enum(avatarEmojiValues).optional(),
 });
 
 export const submitAnswerSchema = z.object({

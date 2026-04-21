@@ -45,6 +45,7 @@ enum SubmissionKind {
   DRAWING
   QUIZ
   TAP
+  PERCENT
 }
 
 model Room {
@@ -72,6 +73,8 @@ model Player {
   sessionToken  String   @unique
   isAudience    Boolean  @default(false)
   connected     Boolean  @default(true)
+  avatarColor   String   @default("#ff4f7b")
+  avatarEmoji   String   @default("🎲")
   joinedAt      DateTime @default(now())
   lastSeenAt    DateTime @default(now())
 

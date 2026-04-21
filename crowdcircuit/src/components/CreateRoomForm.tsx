@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { saveSession } from "@/lib/session";
+import { AVATAR_COLORS, AVATAR_EMOJIS } from "@/lib/avatars";
+import { AvatarPicker } from "./AvatarPicker";
 
 export function CreateRoomForm() {
   const router = useRouter();
@@ -11,6 +13,12 @@ export function CreateRoomForm() {
   const [streamerMode, setStreamerMode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [avatarColor, setAvatarColor] = useState(
+    AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)].color
+  );
+  const [avatarEmoji, setAvatarEmoji] = useState(
+    AVATAR_EMOJIS[Math.floor(Math.random() * AVATAR_EMOJIS.length)]
+  );
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -21,7 +29,13 @@ export function CreateRoomForm() {
       const res = await fetch("/api/rooms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hostName, familyMode, streamerMode }),
+        body: JSON.stringify({
+          hostName,
+          familyMode,
+          streamerMode,
+          avatarColor,
+          avatarEmoji,
+        }),
       });
       const json = await res.json();
       if (!res.ok) {
@@ -52,6 +66,14 @@ export function CreateRoomForm() {
         maxLength={20}
         required
       />
+      <div className="mt-3">
+        <AvatarPicker
+          color={avatarColor}
+          emoji={avatarEmoji}
+          onColor={setAvatarColor}
+          onEmoji={setAvatarEmoji}
+        />
+      </div>
       <div className="mt-3 flex flex-wrap gap-3 text-sm">
         <label className="flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2">
           <input

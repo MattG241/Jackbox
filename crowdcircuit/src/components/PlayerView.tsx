@@ -26,6 +26,8 @@ export function PlayerView() {
         displayName={session.displayName}
         code={snapshot.code}
         gameName={game?.name ?? null}
+        avatarColor={me?.avatarColor ?? "#ff4f7b"}
+        avatarEmoji={me?.avatarEmoji ?? "🎲"}
       />
       {snapshot.phase === "LOBBY" && <LobbyCard audience={audience} game={game ?? null} />}
       {snapshot.phase === "SUBMIT" && !audience && (
@@ -60,20 +62,33 @@ function Header({
   displayName,
   code,
   gameName,
+  avatarColor,
+  avatarEmoji,
 }: {
   audience: boolean;
   displayName: string;
   code: string;
   gameName: string | null;
+  avatarColor: string;
+  avatarEmoji: string;
 }) {
   return (
     <header className="flex items-center justify-between">
-      <div>
-        <div className="text-xs uppercase tracking-widest text-mist/60">
-          {audience ? "Audience" : "Player"}
-          {gameName ? ` • ${gameName}` : ""}
+      <div className="flex items-center gap-3">
+        <div
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-xl"
+          style={{ background: avatarColor }}
+          aria-hidden
+        >
+          {avatarEmoji}
         </div>
-        <div className="text-lg font-semibold">{displayName}</div>
+        <div>
+          <div className="text-xs uppercase tracking-widest text-mist/60">
+            {audience ? "Audience" : "Player"}
+            {gameName ? ` • ${gameName}` : ""}
+          </div>
+          <div className="text-lg font-semibold">{displayName}</div>
+        </div>
       </div>
       <div className="text-right">
         <div className="text-xs uppercase tracking-widest text-mist/60">Room</div>
@@ -118,7 +133,77 @@ function SubmitCard({
   if (kind === "DRAWING") return <DrawingSubmit submitted={submitted} game={game} />;
   if (kind === "QUIZ") return <QuizSubmit submitted={submitted} game={game} />;
   if (kind === "TAP") return <TapSubmit submitted={submitted} game={game} />;
+  if (kind === "PERCENT") return <PercentSubmit submitted={submitted} game={game} />;
   return <TextSubmit submitted={submitted} game={game} />;
+}
+
+function PercentSubmit({ submitted, game }: { submitted: boolean; game: GameCard }) {
+  const { snapshot } = useRoomStore();
+  const round = snapshot?.round;
+  const [value, setValue] = useState(50);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function submit() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    getSocket().emit(
+      "player:submit",
+      { text: JSON.stringify({ value }) },
+      (res) => {
+        setBusy(false);
+        if (!res.ok) setError(res.reason);
+      }
+    );
+  }
+
+  if (!round) return null;
+  return (
+    <div className="cc-card p-5">
+      <SubmitHeader game={game} round={round} />
+      <div className="mt-6 text-center">
+        <div className="text-xs uppercase tracking-widest text-mist/60">Your guess</div>
+        <div className="mt-1 text-6xl font-semibold tabular-nums text-orchid">
+          {value}
+          <span className="text-3xl text-mist/60">%</span>
+        </div>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        step={1}
+        value={value}
+        onChange={(e) => setValue(Number(e.target.value))}
+        className="mt-5 w-full accent-orchid"
+        aria-label="Percentage guess"
+      />
+      <div className="mt-1 flex justify-between text-xs text-mist/40">
+        <span>0%</span>
+        <span>50%</span>
+        <span>100%</span>
+      </div>
+      {submitted && (
+        <div className="mt-4 rounded-xl bg-neon/15 p-3 text-sm text-neon">
+          Guess locked in — slide to change it.
+        </div>
+      )}
+      {error && (
+        <div role="alert" className="mt-2 text-sm text-ember">
+          {error}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={submit}
+        disabled={busy}
+        className="cc-btn-primary mt-4 w-full"
+      >
+        {submitted ? `Update guess (${value}%)` : `Lock in ${value}%`}
+      </button>
+    </div>
+  );
 }
 
 interface RoundHeaderData {
@@ -672,14 +757,29 @@ function ScoreCard() {
   const { snapshot } = useRoomStore();
   if (!snapshot) return null;
   const leaderboard = [...snapshot.players].sort((a, b) => b.score - a.score);
+  const isFinalRound =
+    snapshot.round && snapshot.round.number === snapshot.round.total;
   return (
     <div className="cc-card p-5">
-      <h3 className="text-base font-semibold">Scores so far</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-base font-semibold">Scores so far</h3>
+        {isFinalRound && (
+          <span className="cc-chip !bg-ember/20 !text-ember">2× round</span>
+        )}
+      </div>
       <ul className="mt-2 space-y-1 text-sm">
         {leaderboard.map((p, i) => (
-          <li key={p.id} className="flex justify-between rounded bg-white/5 p-2">
-            <span>
-              {i + 1}. {p.displayName}
+          <li key={p.id} className="flex items-center justify-between rounded bg-white/5 p-2">
+            <span className="flex items-center gap-2">
+              <span className="w-4 text-center text-xs text-mist/50">{i + 1}</span>
+              <span
+                className="grid h-6 w-6 place-items-center rounded-full text-sm"
+                style={{ background: p.avatarColor }}
+                aria-hidden
+              >
+                {p.avatarEmoji}
+              </span>
+              <span>{p.displayName}</span>
             </span>
             <span className="font-mono">{p.score}</span>
           </li>
@@ -696,10 +796,24 @@ function EndCard() {
   const champ = leaderboard[0];
   return (
     <div className="cc-card p-6 text-center">
-      <h3 className="text-lg font-semibold">
+      {champ && (
+        <div
+          className="mx-auto grid h-20 w-20 place-items-center rounded-full text-3xl"
+          style={{ background: champ.avatarColor }}
+          aria-hidden
+        >
+          {champ.avatarEmoji}
+        </div>
+      )}
+      <h3 className="mt-3 text-lg font-semibold">
         {champ ? `${champ.displayName} wins!` : "Match complete"}
       </h3>
-      <p className="mt-1 text-sm text-mist/70">Back to the lobby momentarily.</p>
+      {champ && (
+        <div className="mt-1 text-sm text-mist/70">
+          Final score: <span className="font-mono text-neon">{champ.score}</span>
+        </div>
+      )}
+      <p className="mt-2 text-xs text-mist/50">Watch the big screen for the highlight reel.</p>
     </div>
   );
 }
@@ -727,6 +841,7 @@ function placeholderForGame(gameId: string): string {
     "villain-origin": "The villain origin story…",
     "fortune-forge": "Your fortune…",
     "red-flag-rally": "Flip the flag…",
+    "group-mentality": "The first word that comes to mind…",
   };
   return map[gameId] ?? "Type your answer…";
 }
@@ -743,6 +858,7 @@ function labelForGame(gameId: string): string {
     "villain-origin": "Your origin",
     "fortune-forge": "Your fortune",
     "red-flag-rally": "Your flip",
+    "group-mentality": "Your answer",
   };
   return map[gameId] ?? "Your answer";
 }

@@ -9,7 +9,19 @@ export interface PublicPlayer {
   isAudience: boolean;
   connected: boolean;
   isHost: boolean;
+  avatarColor: string;
+  avatarEmoji: string;
   score: number;
+}
+
+export interface MatchHighlight {
+  id: string;
+  title: string;
+  playerId: string | null;
+  playerName: string;
+  avatarColor: string;
+  avatarEmoji: string;
+  detail: string;
 }
 
 export interface RevealItem {
@@ -23,14 +35,15 @@ export interface RevealItem {
 }
 
 export type GameFlow = "standard" | "quiz" | "reaction";
-export type GameSubmissionKind = "TEXT" | "DRAWING" | "QUIZ" | "TAP";
+export type GameSubmissionKind = "TEXT" | "DRAWING" | "QUIZ" | "TAP" | "PERCENT";
+export type GameScoring = "take" | "fib" | "quiz" | "reaction" | "percent" | "herd";
 
 export interface GameCard {
   id: string;
   name: string;
   tagline: string;
   description: string;
-  scoring: "take" | "fib" | "quiz" | "reaction";
+  scoring: GameScoring;
   flow: GameFlow;
   submissionKind: GameSubmissionKind;
   usesCriterion: boolean;
@@ -49,6 +62,8 @@ export interface RoomSnapshot {
   players: PublicPlayer[];
   audienceCount: number;
   games: GameCard[];
+  // Populated on MATCH_END — MVP/awards based on the finished match.
+  highlights: MatchHighlight[];
   round: {
     number: number;
     total: number;

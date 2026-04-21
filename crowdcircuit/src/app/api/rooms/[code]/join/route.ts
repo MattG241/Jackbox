@@ -25,7 +25,7 @@ export async function POST(
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const { displayName, asAudience } = parsed.data;
+  const { displayName, asAudience, avatarColor, avatarEmoji } = parsed.data;
 
   const room = await prisma.room.findUnique({
     where: { code },
@@ -77,6 +77,8 @@ export async function POST(
       displayName: nameCheck.cleaned,
       sessionToken,
       isAudience: asAudience,
+      ...(avatarColor ? { avatarColor } : {}),
+      ...(avatarEmoji ? { avatarEmoji } : {}),
     },
   });
 
