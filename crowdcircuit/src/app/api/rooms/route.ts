@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { generateRoomCode } from "@/lib/roomCode";
 import { createRoomSchema } from "@/lib/validation";
+import { firstLiveGameId } from "@/games/registry";
 
 // POST /api/rooms — creates an empty room. The TV navigates to
 // /host/[code] as a display-only client (no Player record, no session);
@@ -46,6 +47,9 @@ async function createRoom(req: NextRequest) {
         streamerMode: streamerMode ?? false,
         // hostPlayerId stays null — the first non-audience scanner becomes
         // host. See /api/rooms/[code]/join.
+        // Pre-select a live game so the lobby's "Next up" has a real
+        // entry before anyone votes.
+        selectedGameId: firstLiveGameId(),
       },
     });
     return NextResponse.json({

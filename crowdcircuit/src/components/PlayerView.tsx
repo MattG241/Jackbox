@@ -272,6 +272,7 @@ function LobbyVoteCard({
           const voters = snapshot.players
             .filter((p) => snapshot.playerGameVotes[p.id] === g.id)
             .slice(0, 4);
+          const locked = g.status !== "live";
           return (
             <li key={g.id}>
               <VoteButton
@@ -281,7 +282,9 @@ function LobbyVoteCard({
                 leading={isLeader}
                 pct={count / topVoteCount}
                 voters={voters}
-                disabled={!canVote || busy}
+                disabled={!canVote || busy || locked}
+                locked={locked}
+                lockNote={g.comingSoonNote}
                 onClick={() => vote(g.id)}
               />
             </li>
@@ -386,6 +389,8 @@ function VoteButton({
   pct,
   voters,
   disabled,
+  locked,
+  lockNote,
   onClick,
 }: {
   game: GameCard;
@@ -395,6 +400,8 @@ function VoteButton({
   pct: number;
   voters: PublicPlayer[];
   disabled: boolean;
+  locked: boolean;
+  lockNote: string | null;
   onClick: () => void;
 }) {
   const accent = VOTE_ACCENT[game.accent];
@@ -404,54 +411,73 @@ function VoteButton({
       onClick={onClick}
       disabled={disabled}
       aria-pressed={mine}
-      className={`relative w-full overflow-hidden rounded-2xl border p-4 text-left transition active:scale-[0.99] disabled:opacity-60 ${
-        mine
+      aria-disabled={locked}
+      className={`relative w-full overflow-hidden rounded-2xl border p-4 text-left transition active:scale-[0.99] disabled:cursor-not-allowed ${
+        locked
+          ? "border-white/5 bg-white/[0.015] opacity-70"
+          : mine
           ? `border-transparent bg-gradient-to-r ${accent.bg} ring-2 ${accent.ring} shadow-[0_0_24px_rgba(255,255,255,0.08)]`
           : "border-white/10 bg-white/[0.03] hover:border-white/30"
       }`}
     >
-      {/* Vote progress bar sits behind everything, hugging the bottom. */}
-      <span
-        aria-hidden
-        className={`pointer-events-none absolute inset-x-0 bottom-0 h-[3px] ${accent.bar} opacity-60 transition-[width] duration-500`}
-        style={{ width: `${Math.max(0, Math.min(1, pct)) * 100}%` }}
-      />
+      {!locked && (
+        <span
+          aria-hidden
+          className={`pointer-events-none absolute inset-x-0 bottom-0 h-[3px] ${accent.bar} opacity-60 transition-[width] duration-500`}
+          style={{ width: `${Math.max(0, Math.min(1, pct)) * 100}%` }}
+        />
+      )}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className={`text-lg font-semibold ${accent.text}`}>
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`text-lg font-semibold ${
+                locked ? "text-mist/80" : accent.text
+              }`}
+            >
               {game.name}
             </span>
-            {leading && (
-              <span className="cc-chip !bg-white/15 !text-white text-[10px]">
-                Leading
+            {locked ? (
+              <span className="cc-chip !bg-white/10 !text-mist/70 text-[10px]">
+                Coming soon
               </span>
+            ) : (
+              leading && (
+                <span className="cc-chip !bg-white/15 !text-white text-[10px]">
+                  Leading
+                </span>
+              )
             )}
           </div>
           <div className="mt-0.5 text-xs italic text-mist/70">
             {game.tagline}
           </div>
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-1">
-          <span
-            className={`grid h-10 min-w-[2.5rem] place-items-center rounded-xl px-2 text-lg font-semibold tabular-nums ${
-              mine
-                ? `bg-white/15 ${accent.text}`
-                : count > 0
-                ? "bg-white/10 text-mist"
-                : "bg-white/5 text-mist/40"
-            }`}
-          >
-            {count}
-          </span>
-          {mine && (
-            <span className="text-[10px] uppercase tracking-widest text-mist">
-              Your pick ✓
-            </span>
+          {locked && lockNote && (
+            <div className="mt-1 text-[11px] text-mist/50">{lockNote}</div>
           )}
         </div>
+        {!locked && (
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <span
+              className={`grid h-10 min-w-[2.5rem] place-items-center rounded-xl px-2 text-lg font-semibold tabular-nums ${
+                mine
+                  ? `bg-white/15 ${accent.text}`
+                  : count > 0
+                  ? "bg-white/10 text-mist"
+                  : "bg-white/5 text-mist/40"
+              }`}
+            >
+              {count}
+            </span>
+            {mine && (
+              <span className="text-[10px] uppercase tracking-widest text-mist">
+                Your pick ✓
+              </span>
+            )}
+          </div>
+        )}
       </div>
-      {voters.length > 0 && (
+      {!locked && voters.length > 0 && (
         <div className="mt-3 flex -space-x-2">
           {voters.map((p) => (
             <span

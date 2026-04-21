@@ -14,7 +14,13 @@ import type {
   ClientToServerEvents,
 } from "@/lib/types";
 import { shuffle } from "@/lib/utils";
-import { GAMES, GAME_LIST, getGame } from "@/games/registry";
+import {
+  firstLiveGameId,
+  GAMES,
+  GAME_LIST,
+  getGame,
+  isLive,
+} from "@/games/registry";
 import { clampDrawing } from "@/lib/drawing";
 
 // Constants — mirror the MVP defaults spelled out in the spec.
@@ -134,14 +140,26 @@ export async function ensureRoomLoaded(code: string): Promise<LiveRoom | null> {
     where: { roomId: row.id, isRemote: true },
     select: { id: true },
   });
+  // Heal stale selections: rooms created under an older game line-up may
+  // point to ids that no longer exist, or to games that are now locked
+  // (comingSoon). Fall back to the first live game in either case so the
+  // UI and the match-start machinery never see an invalid id.
+  let selected = row.selectedGameId;
+  if (!GAMES[selected] || !isLive(selected)) {
+    selected = firstLiveGameId();
+    await prisma.room.update({
+      where: { id: row.id },
+      data: { selectedGameId: selected },
+    });
+  }
   const live: LiveRoom = {
     id: row.id,
     code: row.code,
     hostPlayerId: row.hostPlayerId,
     familyMode: row.familyMode,
     streamerMode: row.streamerMode,
-    selectedGameId: row.selectedGameId,
-    currentGameId: row.selectedGameId,
+    selectedGameId: selected,
+    currentGameId: selected,
     phase: "LOBBY",
     matchId: null,
     round: null,
@@ -183,6 +201,8 @@ function toGameCards(): GameCard[] {
     submissionKind: g.submissionKind,
     usesCriterion: g.usesCriterion,
     accent: g.accent,
+    status: g.status,
+    comingSoonNote: g.comingSoonNote ?? null,
   }));
 }
 
@@ -404,9 +424,8 @@ async function pickPromptAndCriterion(room: LiveRoom, usedPromptIds: Set<string>
 export async function startMatch(io: IO, room: LiveRoom, requesterPlayerId: string) {
   if (!canControl(requesterPlayerId, room)) throw new Error("Only the host can start.");
 
-  // Resolve which game to play: if anyone voted, take the highest-voted game
-  // (ties broken by earliest first-vote time); otherwise fall back to whatever
-  // is currently selected. This replaces the old host-only picker.
+  // Resolve which game to play: highest-voted live game wins; ties fall
+  // back to the current selection, then to the first live game.
   const winner = resolveVotedGame(room);
   if (winner && winner !== room.selectedGameId) {
     room.selectedGameId = winner;
@@ -417,6 +436,11 @@ export async function startMatch(io: IO, room: LiveRoom, requesterPlayerId: stri
   }
   if (!GAMES[room.selectedGameId])
     throw new Error("Pick a game before starting the match.");
+  if (!isLive(room.selectedGameId)) {
+    throw new Error(
+      `${GAMES[room.selectedGameId].name} is still in development. Pick a live game.`
+    );
+  }
 
   const corePlayers = await prisma.player.count({
     where: { roomId: room.id, isAudience: false, connected: true },
@@ -1650,13 +1674,15 @@ export async function updateSettings(
 }
 
 // Count current lobby votes and return the gameId with the most. Returns null
-// if there are no votes at all. Ties are broken by the order games appear in
-// the registry — stable across restarts.
+// if there are no live votes at all. Ties are broken by the order games
+// appear in the registry — stable across restarts. Votes for comingSoon
+// games are ignored at resolve time.
 function resolveVotedGame(room: LiveRoom): string | null {
   if (room.gameVotes.size === 0) return null;
   const tally = new Map<string, number>();
   for (const gid of room.gameVotes.values()) {
     if (!GAMES[gid]) continue;
+    if (!isLive(gid)) continue;
     tally.set(gid, (tally.get(gid) ?? 0) + 1);
   }
   if (tally.size === 0) return null;
@@ -1690,6 +1716,11 @@ export async function playerVoteGame(
     room.gameVotes.delete(voterId);
   } else {
     if (!GAMES[gameId]) throw new Error("Unknown game.");
+    if (!isLive(gameId)) {
+      throw new Error(
+        `${GAMES[gameId].name} is coming soon — you can't vote for it yet.`
+      );
+    }
     const previous = room.gameVotes.get(voterId);
     if (previous === gameId) {
       // Tapping the same game again clears the vote (toggle behaviour).

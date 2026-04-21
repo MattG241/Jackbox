@@ -10,6 +10,7 @@ import { BackgroundMusic } from "./BackgroundMusic";
 import { Avatar, PlayerAvatar } from "./Avatar";
 import { PlayerOrbit } from "./PlayerOrbit";
 import { AutoFullscreen } from "./AutoFullscreen";
+import { DrawingGrid } from "./DrawingGrid";
 
 const accentToClass: Record<GameCard["accent"], { chip: string; heading: string; ring: string }> = {
   ember: { chip: "!bg-ember/20 !text-ember", heading: "text-ember", ring: "ring-ember/60" },
@@ -663,28 +664,32 @@ function RevealPanel({ game }: { game: GameCard | null }) {
           )}
         </div>
       ) : (
-        <div className="mt-4 grid flex-1 min-h-0 gap-3 overflow-y-auto sm:grid-cols-2">
-          {r.reveal.map((item, i) => {
-            const drawing = isDrawing && !item.isTruth ? tryParseDrawing(item.text) : null;
-            return (
-              <div
-                key={item.submissionId ?? `truth-${i}`}
-                className="cc-card border-white/10 p-4 animate-floaty"
-                style={{ animationDelay: `${i * 150}ms` }}
-              >
-                <div className="text-xs text-mist/50">
-                  {isDrawing ? `Doodle ${i + 1}` : `Entry ${i + 1}`}
-                </div>
-                {drawing ? (
-                  <div className="mt-2">
-                    <DrawingView drawing={drawing} />
+        <div className="mt-4 flex-1 min-h-0">
+          <DrawingGrid
+            count={r.reveal.length}
+            renderCell={(i) => {
+              const item = r.reveal[i];
+              const drawing =
+                isDrawing && !item.isTruth ? tryParseDrawing(item.text) : null;
+              return (
+                <div
+                  className="cc-card flex h-full w-full flex-col border-white/10 p-3 animate-floaty"
+                  style={{ animationDelay: `${i * 120}ms` }}
+                >
+                  <div className="shrink-0 text-xs text-mist/50">
+                    {isDrawing ? `Doodle ${i + 1}` : `Entry ${i + 1}`}
                   </div>
-                ) : (
-                  <div className="mt-1 text-lg">{item.text}</div>
-                )}
-              </div>
-            );
-          })}
+                  <div className="mt-2 flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+                    {drawing ? (
+                      <DrawingView drawing={drawing} />
+                    ) : (
+                      <div className="text-base">{item.text}</div>
+                    )}
+                  </div>
+                </div>
+              );
+            }}
+          />
         </div>
       )}
     </section>
@@ -949,30 +954,31 @@ function VotePanel({ game }: { game: GameCard | null }) {
           Vote for the {r.criterionLabel}
         </div>
       ) : null}
-      <div className="mt-4 grid flex-1 min-h-0 gap-3 overflow-y-auto sm:grid-cols-2">
-        {r.reveal.map((item, i) => {
-          const drawing =
-            r.submissionKind === "DRAWING" && !item.isTruth
-              ? tryParseDrawing(item.text)
-              : null;
-          return (
-            <div
-              key={item.submissionId ?? `truth-${i}`}
-              className="rounded-2xl bg-white/5 p-5"
-            >
-              <div className="text-xs text-mist/50">
-                {drawing ? `Doodle ${i + 1}` : `Entry ${i + 1}`}
-              </div>
-              {drawing ? (
-                <div className="mt-2">
-                  <DrawingView drawing={drawing} />
+      <div className="mt-4 flex-1 min-h-0">
+        <DrawingGrid
+          count={r.reveal.length}
+          renderCell={(i) => {
+            const item = r.reveal[i];
+            const drawing =
+              r.submissionKind === "DRAWING" && !item.isTruth
+                ? tryParseDrawing(item.text)
+                : null;
+            return (
+              <div className="flex h-full w-full flex-col rounded-2xl bg-white/5 p-4">
+                <div className="shrink-0 text-xs text-mist/50">
+                  {drawing ? `Doodle ${i + 1}` : `Entry ${i + 1}`}
                 </div>
-              ) : (
-                <div className="mt-1 text-lg">{item.text}</div>
-              )}
-            </div>
-          );
-        })}
+                <div className="mt-2 flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+                  {drawing ? (
+                    <DrawingView drawing={drawing} />
+                  ) : (
+                    <div className="text-base">{item.text}</div>
+                  )}
+                </div>
+              </div>
+            );
+          }}
+        />
       </div>
       <p className="mt-2 shrink-0 text-sm text-mist/60">
         {r.votedVoterIds.length} vote{r.votedVoterIds.length === 1 ? "" : "s"} cast.

@@ -107,7 +107,23 @@ export type GameScoring =
   | "trace"
   | "color"
   | "chain"
-  | "combo";
+  | "combo"
+  // Declared for the forthcoming game line-up. Games using these modes
+  // are `comingSoon` until their mechanic lands — the engine never tries
+  // to score them.
+  | "hold"
+  | "photo"
+  | "rhythm"
+  | "zone"
+  | "tile"
+  | "reflex"
+  | "pixel"
+  | "tilt"
+  | "alibi"
+  | "saboteur"
+  | "avalanche";
+
+export type GameStatus = "live" | "comingSoon";
 
 export interface GameCard {
   id: string;
@@ -119,6 +135,10 @@ export interface GameCard {
   submissionKind: GameSubmissionKind;
   usesCriterion: boolean;
   accent: "ember" | "neon" | "sol" | "orchid";
+  // "comingSoon" games appear in the lobby UI but can't be voted for or
+  // started — they're waiting on their mechanic to be built.
+  status: GameStatus;
+  comingSoonNote: string | null;
 }
 
 export interface RoomSnapshot {

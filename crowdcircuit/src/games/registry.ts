@@ -1,14 +1,26 @@
-// Central registry for all CrowdCircuit mini-games.
+// Central registry for CrowdCircuit mini-games.
 //
-// Every game here uses the shared phase machine (LOBBY → SUBMIT → REVEAL → VOTE
-// → SCORE → MATCH_END) but can customize: prompt pool, criterion style, scoring
-// mode, UI labels, and whether there's a hidden "truth" to detect.
+// This is the overhauled line-up — every game that ships in the app is
+// defined here with its flow, scoring mode, accent, and status. Games
+// flagged `status: "comingSoon"` show up in the phone vote UI with a
+// locked badge; the server refuses to start them until their mechanic
+// is built.
 //
-// Two scoring modes currently exist:
-//   - "take"  : like Hot Take Hustle — authors score from votes received, sharp
-//               voters score a bonus for picking the top submission.
-//   - "fib"   : like Crowd Fibs — voters score for picking the hidden truth,
-//               authors score for fooling other voters into picking their fib.
+// Scoring modes currently supported by the engine:
+//   take     — authors score from votes received, sharp voters bonus the winner.
+//   fib      — voters score for picking the hidden truth, fibbers score for fooling.
+//   quiz     — wager scoring against a fixed "truth".
+//   reaction — real-time mini-games (TAP), self-report score.
+//   percent  — guess a 0–100 number, score on proximity.
+//   color    — submit an RGB (+ optional target-type variants), score on distance.
+//   trace    — finger-trace accuracy.
+//   herd     — cluster short-text answers, score for matching the room.
+//   chain    — multi-stage "telephone" (phrase → drawing → guess).
+//   combo    — parallel stages pair-shuffled at reveal.
+//
+// New modes declared here for forthcoming games (not yet implemented):
+//   hold, photo, rhythm, zone, tile, reflex, pixel, tilt, alibi, saboteur, avalanche.
+// Games using those modes are marked comingSoon so the UI can lock them.
 
 import type { Rating, SubmissionKind } from "@prisma/client";
 
@@ -17,63 +29,57 @@ export type ScoringMode =
   | "fib"
   | "quiz"
   | "reaction"
-  // percent: Guesspionage-style. Players guess a percentage (0–100). Scoring is
-  // based on proximity to the real answer; a bullseye lands a big bonus.
   | "percent"
-  // herd: Group Mentality. Players submit a short text answer to a prompt;
-  // they score based on how many other players matched their answer.
   | "herd"
-  // trace: Trace Race. Real-time finger-trace accuracy game; scored client-side
-  // like reaction but with an accuracy payload.
   | "trace"
-  // color: Slider Wars. 3 sliders form an RGB value; scored by distance from
-  // a target colour.
   | "color"
-  // chain: Stroke of Genius. Multi-stage "telephone" — phrase → drawing → guess.
   | "chain"
-  // combo: Mash-Up Doodle. Two parallel stages (icon + slogan) then random pairings.
-  | "combo";
+  | "combo"
+  // --- New modes for the overhauled line-up (comingSoon until built). ---
+  | "hold"
+  | "photo"
+  | "rhythm"
+  | "zone"
+  | "tile"
+  | "reflex"
+  | "pixel"
+  | "tilt"
+  | "alibi"
+  | "saboteur"
+  | "avalanche";
 
 export type StageKind = "TEXT" | "DRAWING" | "SLOGAN" | "ICON";
 
 export interface GameStage {
-  // What the player submits this stage. Mirrors SubmissionKind values but
-  // typed loosely so games can label their stages (e.g. "SLOGAN" is TEXT).
   kind: "TEXT" | "DRAWING";
-  // Label shown above the submission form.
   label: string;
-  // Placeholder shown inside the submission form.
   placeholder: string;
-  // Seconds for this stage. Falls back to DEFAULTS.SUBMIT_SECONDS.
   seconds?: number;
-  // For chain games: how the target is routed to each player at this stage.
-  //   "prompt-bank"  — pick a fresh prompt from the game's seedPrompts.
-  //   "from-prev"    — the previous player's submission from the prior stage.
   targetRouting?: "prompt-bank" | "from-prev";
-  // For chain games: optional helper text shown with the target.
   helper?: string;
 }
 
-// Game flow decides which phases run:
-//   standard : SUBMIT → REVEAL → VOTE → SCORE (take + fib games)
-//   quiz     : SUBMIT → REVEAL → SCORE      (no voting — truth scores directly)
-//   reaction : SUBMIT → SCORE              (real-time mini-game, no reveal/vote)
-//   chain    : (SUBMIT × N) → REVEAL → VOTE → SCORE  (telephone-style)
-//   combo    : (SUBMIT × N) → REVEAL → VOTE → SCORE  (parallel submissions, mash-up)
+// Game flow decides which phases run.
+//   standard : SUBMIT → REVEAL → VOTE → SCORE (take + fib)
+//   quiz     : SUBMIT → REVEAL → SCORE        (no voting)
+//   reaction : SUBMIT → SCORE                 (real-time, no reveal/vote)
+//   chain    : (SUBMIT × N) → REVEAL → VOTE → SCORE
+//   combo    : (SUBMIT × N) → REVEAL → VOTE → SCORE
 export type GameFlow = "standard" | "quiz" | "reaction" | "chain" | "combo";
 
 export interface SeedPrompt {
   text: string;
   rating: Rating;
   tag?: string;
-  // For fib games: the hidden truthful answer.
-  // For quiz games: the correct choice (string matches one entry in `choices`).
   truth?: string;
-  // For quiz games: the multiple-choice options.
   choices?: string[];
-  // Optional extra context (hint, image ref, setup line).
   detail?: string;
 }
+
+// "live"       — playable on the current engine.
+// "comingSoon" — definition exists for UI/voting parity, but the game
+//                needs its mechanic built before it's startable.
+export type GameStatus = "live" | "comingSoon";
 
 export interface GameDefinition {
   id: string;
@@ -83,896 +89,505 @@ export interface GameDefinition {
   scoring: ScoringMode;
   flow: GameFlow;
   submissionKind: SubmissionKind;
-  // Whether the criterion label is hidden during SUBMIT and revealed at VOTE.
   secretCriterion: boolean;
-  // Some games don't use a criterion at all (fib / quiz / reaction).
   usesCriterion: boolean;
   submissionPlaceholder: string;
   submissionLabel: string;
   voteInstruction: (criterionLabel: string | null) => string;
   revealKicker: string;
-  // Per-game phase timers. Fall back to DEFAULTS when undefined.
   submitSeconds?: number;
   revealSeconds?: number;
   voteSeconds?: number;
   seedPrompts: SeedPrompt[];
   seedCriteria?: { label: string; rating: Rating; hint?: string }[];
   accent: "ember" | "neon" | "sol" | "orchid";
-  // Multi-stage games (chain/combo) declare an ordered list of stages. Each
-  // stage is a SUBMIT phase with its own kind, label, and routing rules.
   stages?: GameStage[];
+  // Runtime flag — the host's phone + server check this before starting.
+  status: GameStatus;
+  // Short support line shown on locked games (e.g. "Adds hold-and-release
+  // mechanic next"). Optional; ignored for live games.
+  comingSoonNote?: string;
 }
 
-const universalCriteria = (gameSpice: string[]): GameDefinition["seedCriteria"] => [
-  { label: "Funniest", rating: "FAMILY", hint: "The one that made you laugh out loud." },
-  { label: "Most Chaotic", rating: "FAMILY", hint: "Pure unhinged energy." },
-  { label: "Most Convincing", rating: "FAMILY", hint: "Weirdly plausible." },
-  { label: "Weirdest", rating: "FAMILY", hint: "Brain went sideways." },
-  { label: "Most Heartwarming", rating: "FAMILY", hint: "Unexpectedly sweet." },
-  ...gameSpice.map((label) => ({ label, rating: "STANDARD" as Rating })),
+// ---------------------------------------------------------------------
+// Playable today — mapped to the existing submission/scoring engine.
+// ---------------------------------------------------------------------
+
+const guesspionagePrompts: SeedPrompt[] = [
+  { text: "What % of people have fallen asleep in a meeting?", rating: "FAMILY", truth: "68" },
+  { text: "What % of people secretly dislike their neighbour?", rating: "FAMILY", truth: "37" },
+  { text: "What % of people have lied about reading a book?", rating: "FAMILY", truth: "44" },
+  { text: "What % of drivers admit to singing alone in the car?", rating: "FAMILY", truth: "81" },
+  { text: "What % of people have googled themselves this month?", rating: "FAMILY", truth: "52" },
+  { text: "What % of households have a TV that nobody watches?", rating: "FAMILY", truth: "29" },
+  { text: "What % of people have cried at a Pixar movie?", rating: "FAMILY", truth: "64" },
+  { text: "What % of people have texted the wrong person?", rating: "FAMILY", truth: "73" },
+  { text: "What % of people prefer the sound of rain over silence?", rating: "FAMILY", truth: "58" },
+  { text: "What % of workers have taken a sick day when not sick?", rating: "FAMILY", truth: "49" },
 ];
 
+const colourTargets: SeedPrompt[] = [
+  { text: "Match this: Sunset Coral", rating: "FAMILY", truth: "255,111,97" },
+  { text: "Match this: Electric Teal", rating: "FAMILY", truth: "64,224,208" },
+  { text: "Match this: Royal Purple", rating: "FAMILY", truth: "120,81,169" },
+  { text: "Match this: Neon Mustard", rating: "FAMILY", truth: "255,219,88" },
+  { text: "Match this: Storm Navy", rating: "FAMILY", truth: "21,34,56" },
+  { text: "Match this: Bubblegum Pink", rating: "FAMILY", truth: "255,158,205" },
+  { text: "Match this: Forest Moss", rating: "FAMILY", truth: "78,107,66" },
+  { text: "Match this: Hot Lava", rating: "FAMILY", truth: "255,71,40" },
+];
+
+const doodleDashPrompts: SeedPrompt[] = [
+  { text: "A penguin who lost their wallet", rating: "FAMILY" },
+  { text: "The world's worst superhero", rating: "FAMILY" },
+  { text: "A vegetable on strike", rating: "FAMILY" },
+  { text: "A haunted vending machine", rating: "FAMILY" },
+  { text: "A pet that's clearly an alien", rating: "FAMILY" },
+  { text: "Breakfast in the year 3000", rating: "FAMILY" },
+  { text: "A villain's vacation selfie", rating: "FAMILY" },
+  { text: "A sport invented by toddlers", rating: "FAMILY" },
+  { text: "A dinosaur's job interview", rating: "FAMILY" },
+  { text: "The saddest sandwich", rating: "FAMILY" },
+];
+
+const counterfeitPrompts: SeedPrompt[] = [
+  // The "truth" field is a shorthand reference for the scene — future
+  // iterations will render a proper image here during the flash phase.
+  { text: "Reproduce: a cat in a spacesuit on the moon", rating: "FAMILY", truth: "cat-astronaut" },
+  { text: "Reproduce: a pirate ship sailing through clouds", rating: "FAMILY", truth: "sky-pirate" },
+  { text: "Reproduce: a giant robot eating a donut", rating: "FAMILY", truth: "robot-donut" },
+  { text: "Reproduce: a flamingo on rollerblades", rating: "FAMILY", truth: "flamingo-skates" },
+  { text: "Reproduce: a castle melting in the sun", rating: "FAMILY", truth: "melty-castle" },
+];
+
+const sliderWarsPrompts: SeedPrompt[] = [
+  { text: "Match this: Deep Ocean", rating: "FAMILY", truth: "20,60,120" },
+  { text: "Match this: Electric Lime", rating: "FAMILY", truth: "200,255,60" },
+  { text: "Match this: Magenta Heart", rating: "FAMILY", truth: "220,30,140" },
+  { text: "Match this: Toast Brown", rating: "FAMILY", truth: "135,80,50" },
+];
+
+// ---------------------------------------------------------------------
+// The 18-game line-up.
+// ---------------------------------------------------------------------
+
 export const GAMES: Record<string, GameDefinition> = {
-  "hot-take-hustle": {
-    id: "hot-take-hustle",
-    name: "Hot Take Hustle",
-    tagline: "Silly prompts, sharper takes, secret criterion.",
-    description:
-      "Every round drops a silly prompt. Everyone submits a one-line take. The secret criterion is revealed at voting time — funniest, pettiest, most convincing, whatever the round demands.",
-    scoring: "take",
-    flow: "standard",
-    submissionKind: "TEXT",
-    secretCriterion: true,
-    usesCriterion: true,
-    submissionPlaceholder: "Drop your take…",
-    submissionLabel: "Your take",
-    voteInstruction: (c) => (c ? `Vote for the ${c.toLowerCase()}.` : "Vote for your favourite."),
-    revealKicker: "TAKES REVEALED",
-    accent: "ember",
-    seedPrompts: [
-      { text: "Rank these breakfast foods by how much they respect you.", rating: "FAMILY", tag: "food" },
-      { text: "Name a fake holiday everyone would secretly celebrate.", rating: "FAMILY", tag: "invention" },
-      { text: "Describe a new Olympic sport that requires zero athletic ability.", rating: "FAMILY", tag: "sports" },
-      { text: "Pitch a sequel to a boring household object.", rating: "FAMILY", tag: "invention" },
-      { text: "Invent a warning label nobody would ever follow.", rating: "FAMILY", tag: "absurd" },
-      { text: "Give a motivational quote for people who just hit snooze six times.", rating: "FAMILY", tag: "life" },
-      { text: "What's the most chaotic thing to shout at a library?", rating: "STANDARD", tag: "chaos" },
-      { text: "Invent a reality show nobody asked for.", rating: "STANDARD", tag: "tv" },
-      { text: "Write a dating profile bio for a raccoon with ambition.", rating: "STANDARD", tag: "dating" },
-      { text: "Give a suspicious excuse for being three hours late to a video call.", rating: "STANDARD", tag: "work" },
-      { text: "Pitch a self-help book written by a tired crow.", rating: "STANDARD", tag: "life" },
-      { text: "Invent a conspiracy theory about a vegetable.", rating: "STANDARD", tag: "absurd" },
-    ],
-    seedCriteria: universalCriteria(["Most Petty", "Most Spicy", "Most Cursed", "Most Gremlin"]),
-  },
+  // ===== LIVE (mapped to existing mechanics) ======================
 
-  "pitch-party": {
-    id: "pitch-party",
-    name: "Pitch Party",
-    tagline: "Two random words. One startup. Zero shame.",
-    description:
-      "You get two wildly unrelated nouns. Pitch a startup that somehow combines them. Everyone votes for who they'd pour fake venture capital into.",
-    scoring: "take",
-    flow: "standard",
-    submissionKind: "TEXT",
-    secretCriterion: false,
-    usesCriterion: true,
-    submissionPlaceholder: "Pitch your startup in one sentence…",
-    submissionLabel: "Your pitch",
-    voteInstruction: () => "Who would you invest in?",
-    revealKicker: "PITCHES INCOMING",
-    accent: "neon",
-    seedPrompts: [
-      { text: "Rubber duck × funeral services", rating: "FAMILY", tag: "pitch" },
-      { text: "Subscription mailbox × haunted house", rating: "FAMILY", tag: "pitch" },
-      { text: "Yoga studio × parking lot", rating: "FAMILY", tag: "pitch" },
-      { text: "AI chatbot × competitive knitting", rating: "FAMILY", tag: "pitch" },
-      { text: "Ice cream truck × tax advisory", rating: "FAMILY", tag: "pitch" },
-      { text: "Dog walking × crypto wallet", rating: "FAMILY", tag: "pitch" },
-      { text: "Meal kit × escape room", rating: "FAMILY", tag: "pitch" },
-      { text: "Laundromat × meditation retreat", rating: "FAMILY", tag: "pitch" },
-      { text: "Moving company × dating app", rating: "STANDARD", tag: "pitch" },
-      { text: "Stand-up comedy × mattress delivery", rating: "STANDARD", tag: "pitch" },
-      { text: "Bird-watching × nightclub", rating: "STANDARD", tag: "pitch" },
-      { text: "Carwash × therapy practice", rating: "STANDARD", tag: "pitch" },
-    ],
-    seedCriteria: [
-      { label: "Most Investable", rating: "FAMILY", hint: "You'd actually hit 'fund'." },
-    ],
-  },
-
-  "bad-advice-booth": {
-    id: "bad-advice-booth",
-    name: "Bad Advice Booth",
-    tagline: "Real problems. Worst possible guidance.",
-    description:
-      "A very real, very normal personal problem arrives on the host screen. Write the most spectacularly unhelpful advice you can. Good intentions not required.",
-    scoring: "take",
-    flow: "standard",
-    submissionKind: "TEXT",
-    secretCriterion: false,
-    usesCriterion: true,
-    submissionPlaceholder: "Write the worst possible advice…",
-    submissionLabel: "Your advice",
-    voteInstruction: () => "Which advice is the most disastrous?",
-    revealKicker: "ADVICE DROP",
-    accent: "orchid",
-    seedPrompts: [
-      { text: "My roommate keeps eating my leftovers. What do I do?", rating: "FAMILY", tag: "home" },
-      { text: "My boss keeps scheduling meetings at 4:55pm on Fridays.", rating: "FAMILY", tag: "work" },
-      { text: "I accidentally waved back at someone who wasn't waving at me.", rating: "FAMILY", tag: "social" },
-      { text: "My neighbor plays bagpipes at 6am, badly.", rating: "FAMILY", tag: "home" },
-      { text: "My plant has started judging me, I can feel it.", rating: "FAMILY", tag: "home" },
-      { text: "I said 'you too' when the barista said enjoy your coffee.", rating: "FAMILY", tag: "social" },
-      { text: "My friend won't stop recommending the same podcast.", rating: "FAMILY", tag: "social" },
-      { text: "I replied-all to the whole company by accident.", rating: "STANDARD", tag: "work" },
-      { text: "My dog has started ignoring me.", rating: "STANDARD", tag: "pets" },
-      { text: "I keep losing arguments with my GPS.", rating: "STANDARD", tag: "tech" },
-      { text: "My date keeps calling their car 'she'.", rating: "STANDARD", tag: "dating" },
-      { text: "I laughed at the wrong part of the wedding speech.", rating: "STANDARD", tag: "social" },
-    ],
-    seedCriteria: [
-      { label: "Most Disastrous", rating: "FAMILY", hint: "Strong 'do not try this' energy." },
-    ],
-  },
-
-  "hype-machine": {
-    id: "hype-machine",
-    name: "Hype Machine",
-    tagline: "Boring object. Unreasonable enthusiasm.",
-    description:
-      "You get a profoundly mundane object. Hype it like you're headlining the world's most optimistic keynote. Crowd votes who almost made them believe.",
-    scoring: "take",
-    flow: "standard",
-    submissionKind: "TEXT",
-    secretCriterion: false,
-    usesCriterion: true,
-    submissionPlaceholder: "Hype it up in one sentence…",
-    submissionLabel: "Your hype",
-    voteInstruction: () => "Who got you the most hyped?",
-    revealKicker: "HYPE DROP",
-    accent: "sol",
-    seedPrompts: [
-      { text: "A paperclip", rating: "FAMILY", tag: "object" },
-      { text: "A single sock", rating: "FAMILY", tag: "object" },
-      { text: "A wet napkin", rating: "FAMILY", tag: "object" },
-      { text: "A half-charged battery", rating: "FAMILY", tag: "object" },
-      { text: "A fridge magnet shaped like a pineapple", rating: "FAMILY", tag: "object" },
-      { text: "A sticky door hinge", rating: "FAMILY", tag: "object" },
-      { text: "A Tuesday in February", rating: "FAMILY", tag: "concept" },
-      { text: "An elevator that only goes to two floors", rating: "FAMILY", tag: "place" },
-      { text: "A beige cubicle", rating: "STANDARD", tag: "place" },
-      { text: "The phrase 'per my last email'", rating: "STANDARD", tag: "concept" },
-      { text: "A gas station hot dog", rating: "STANDARD", tag: "food" },
-      { text: "A printer that only works at night", rating: "STANDARD", tag: "object" },
-    ],
-    seedCriteria: [
-      { label: "Most Convincing", rating: "FAMILY", hint: "You briefly believed it." },
-    ],
-  },
-
-  "scene-stealer": {
-    id: "scene-stealer",
-    name: "Scene Stealer",
-    tagline: "One line. One scene. One thief.",
-    description:
-      "A scene setup arrives. Submit the single line of dialogue that would completely steal the scene. Voters pick the line they're quoting all night.",
-    scoring: "take",
-    flow: "standard",
-    submissionKind: "TEXT",
-    secretCriterion: false,
-    usesCriterion: true,
-    submissionPlaceholder: "The one line that steals the scene…",
-    submissionLabel: "Your line",
-    voteInstruction: () => "Which line steals the scene?",
-    revealKicker: "LIGHTS UP",
-    accent: "ember",
-    seedPrompts: [
-      { text: "A family dinner that is 96% too quiet.", rating: "FAMILY", tag: "scene" },
-      { text: "A first day at a suspicious new job.", rating: "FAMILY", tag: "scene" },
-      { text: "A team meeting 30 seconds before a fire drill nobody knows about.", rating: "FAMILY", tag: "scene" },
-      { text: "An elevator stuck between floors with a stranger.", rating: "FAMILY", tag: "scene" },
-      { text: "A haunted library that's also open-plan.", rating: "FAMILY", tag: "scene" },
-      { text: "A wedding rehearsal three minutes after a breakup.", rating: "STANDARD", tag: "scene" },
-      { text: "The school play's opening night goes sideways.", rating: "FAMILY", tag: "scene" },
-      { text: "A reunion nobody RSVP'd to but everyone showed up.", rating: "STANDARD", tag: "scene" },
-      { text: "A support group for former child actors of commercials.", rating: "STANDARD", tag: "scene" },
-      { text: "The quietest heist in history, at a cat café.", rating: "FAMILY", tag: "scene" },
-      { text: "A road trip where the GPS has become sentient.", rating: "FAMILY", tag: "scene" },
-      { text: "A diner at 3am after an argument.", rating: "STANDARD", tag: "scene" },
-    ],
-    seedCriteria: [
-      { label: "Funniest", rating: "FAMILY", hint: "Scene-stealing line of the round." },
-    ],
-  },
-
-  "crowd-fibs": {
-    id: "crowd-fibs",
-    name: "Crowd Fibs",
-    tagline: "Invent a lie. Spot the truth. Everyone wins, sort of.",
-    description:
-      "A weird-but-true trivia question appears. Players write fake answers that *sound* true. The real answer is shuffled in. Everyone tries to pick the truth. Points for detectives. Points for liars who fool the room.",
-    scoring: "fib",
-    flow: "standard",
-    submissionKind: "TEXT",
-    secretCriterion: false,
-    usesCriterion: false,
-    submissionPlaceholder: "Write a believable fake answer…",
-    submissionLabel: "Your fake answer",
-    voteInstruction: () => "Which one is the truth?",
-    revealKicker: "TRUTHS & FIBS",
-    accent: "orchid",
-    seedPrompts: [
-      {
-        text: "According to researchers, what percentage of office printers are blamed for problems they didn't cause?",
-        truth: "Roughly 62%, in a long-running print industry survey.",
-        rating: "FAMILY",
-        tag: "trivia",
-      },
-      {
-        text: "A 2022 study found that most adults can recognise their partner by which sense alone?",
-        truth: "Footsteps, with about 78% accuracy.",
-        rating: "FAMILY",
-        tag: "trivia",
-      },
-      {
-        text: "What unusual item is the single most common thing left behind at airport security?",
-        truth: "Reusable water bottles.",
-        rating: "FAMILY",
-        tag: "trivia",
-      },
-      {
-        text: "Which common word was originally invented as a marketing term?",
-        truth: "The word 'escalator' started as a brand name.",
-        rating: "FAMILY",
-        tag: "trivia",
-      },
-      {
-        text: "Which animal has been documented 'napping' upside down for the longest stretch?",
-        truth: "A species of parrotlet, observed sleeping hanging for up to 90 minutes.",
-        rating: "FAMILY",
-        tag: "trivia",
-      },
-      {
-        text: "What oddly specific sound consistently makes workers in a study more productive?",
-        truth: "A low, intermittent hum at roughly 70 decibels.",
-        rating: "FAMILY",
-        tag: "trivia",
-      },
-      {
-        text: "In the 1800s, what was briefly considered a required part of polite greeting?",
-        truth: "Holding a small handkerchief with your non-dominant hand.",
-        rating: "FAMILY",
-        tag: "trivia",
-      },
-      {
-        text: "What is the most common reason people abandon an online cart, per retail studies?",
-        truth: "They were just comparing prices with no intent to buy.",
-        rating: "STANDARD",
-        tag: "trivia",
-      },
-      {
-        text: "A university study found what single factor best predicted long-term friendship retention?",
-        truth: "Living within a 15-minute walk of each other.",
-        rating: "STANDARD",
-        tag: "trivia",
-      },
-      {
-        text: "Which everyday word has been traced back to a sailor's insult for a lazy coworker?",
-        truth: "The word 'loafer'.",
-        rating: "STANDARD",
-        tag: "trivia",
-      },
-    ],
-  },
-
-  "caption-chaos": {
-    id: "caption-chaos",
-    name: "Caption Chaos",
-    tagline: "Describe the scene. Caption the chaos.",
-    description:
-      "A wildly absurd scene description arrives. Write the caption that belongs under it. Crowd picks the caption that cemented it into the group chat.",
-    scoring: "take",
-    flow: "standard",
-    submissionKind: "TEXT",
-    secretCriterion: false,
-    usesCriterion: true,
-    submissionPlaceholder: "Write the caption…",
-    submissionLabel: "Your caption",
-    voteInstruction: () => "Which caption wins the internet?",
-    revealKicker: "CAPTION THIS",
-    accent: "neon",
-    seedPrompts: [
-      { text: "A raccoon holding a tiny briefcase boarding a city bus.", rating: "FAMILY", tag: "scene" },
-      { text: "A dog wearing three sweaters and a look of quiet disappointment.", rating: "FAMILY", tag: "scene" },
-      { text: "A toddler presenting a serious slide deck to a houseplant.", rating: "FAMILY", tag: "scene" },
-      { text: "A cat knocking over a chess piece with extreme deliberation.", rating: "FAMILY", tag: "scene" },
-      { text: "An owl standing in a photocopier room at 2am.", rating: "FAMILY", tag: "scene" },
-      { text: "A very tired dragon holding an 'employee of the month' plaque.", rating: "FAMILY", tag: "scene" },
-      { text: "Two pigeons silently judging a food-truck line.", rating: "FAMILY", tag: "scene" },
-      { text: "A cow breaking up a fight between two very small goats.", rating: "FAMILY", tag: "scene" },
-      { text: "A single shoe left on a park bench with a Post-it that says 'thinking'.", rating: "STANDARD", tag: "scene" },
-      { text: "A crab wearing a tiny top hat giving a speech to seagulls.", rating: "FAMILY", tag: "scene" },
-      { text: "Someone's grandma high-fiving a bouncer outside a nightclub.", rating: "STANDARD", tag: "scene" },
-      { text: "A very serious llama standing in front of a whiteboard.", rating: "FAMILY", tag: "scene" },
-    ],
-    seedCriteria: [
-      { label: "Best Caption", rating: "FAMILY", hint: "Group-chat worthy." },
-    ],
-  },
-
-  "villain-origin": {
-    id: "villain-origin",
-    name: "Villain Origin",
-    tagline: "One tiny inconvenience. One tragic backstory.",
-    description:
-      "A small inconvenience is announced. Write the villain origin story it definitely caused. Voters pick the one they find tragically sympathetic.",
-    scoring: "take",
-    flow: "standard",
-    submissionKind: "TEXT",
-    secretCriterion: false,
-    usesCriterion: true,
-    submissionPlaceholder: "Write the villain origin…",
-    submissionLabel: "Your origin",
-    voteInstruction: () => "Whose origin feels *too* real?",
-    revealKicker: "ORIGIN STORY",
-    accent: "orchid",
-    seedPrompts: [
-      { text: "Stepping on a single Lego piece in the dark.", rating: "FAMILY", tag: "spark" },
-      { text: "Finding the last slice eaten.", rating: "FAMILY", tag: "spark" },
-      { text: "A group chat that went silent right after you spoke.", rating: "FAMILY", tag: "spark" },
-      { text: "Microwave timer off by five seconds.", rating: "FAMILY", tag: "spark" },
-      { text: "Someone who doesn't say 'bless you'.", rating: "FAMILY", tag: "spark" },
-      { text: "Getting two very different coworker nicknames.", rating: "FAMILY", tag: "spark" },
-      { text: "A birthday card from a parent in the wrong month.", rating: "STANDARD", tag: "spark" },
-      { text: "A text that says 'we need to talk.'", rating: "STANDARD", tag: "spark" },
-      { text: "An earbud that only works on one side.", rating: "FAMILY", tag: "spark" },
-      { text: "A clothing tag that scratches for years.", rating: "FAMILY", tag: "spark" },
-      { text: "A receipt that's just a little too long.", rating: "STANDARD", tag: "spark" },
-      { text: "The phrase 'circling back.'", rating: "STANDARD", tag: "spark" },
-    ],
-    seedCriteria: [
-      { label: "Most Sympathetic Villain", rating: "FAMILY", hint: "You kinda get it." },
-    ],
-  },
-
-  "fortune-forge": {
-    id: "fortune-forge",
-    name: "Fortune Forge",
-    tagline: "Write the fortune cookie nobody asked for.",
-    description:
-      "A theme is announced. Write the cursed, chaotic, or strangely correct fortune cookie message it generates. Everyone picks the one they'd post on the fridge.",
-    scoring: "take",
-    flow: "standard",
-    submissionKind: "TEXT",
-    secretCriterion: false,
-    usesCriterion: true,
-    submissionPlaceholder: "Your fortune…",
-    submissionLabel: "Your fortune",
-    voteInstruction: () => "Which fortune are you printing tonight?",
-    revealKicker: "FORTUNES FORGED",
-    accent: "sol",
-    seedPrompts: [
-      { text: "Fortunes about Tuesday", rating: "FAMILY", tag: "theme" },
-      { text: "Fortunes from a very tired oracle", rating: "FAMILY", tag: "theme" },
-      { text: "Fortunes for people running late", rating: "FAMILY", tag: "theme" },
-      { text: "Fortunes for someone holding too many coffees", rating: "FAMILY", tag: "theme" },
-      { text: "Fortunes for people who just got an email at 11pm", rating: "FAMILY", tag: "theme" },
-      { text: "Fortunes about your houseplants", rating: "FAMILY", tag: "theme" },
-      { text: "Fortunes for people standing in the wrong line", rating: "FAMILY", tag: "theme" },
-      { text: "Fortunes from a retired wizard", rating: "FAMILY", tag: "theme" },
-      { text: "Fortunes for someone who forgot what they came upstairs for", rating: "FAMILY", tag: "theme" },
-      { text: "Fortunes for 3am decisions", rating: "STANDARD", tag: "theme" },
-      { text: "Fortunes for the person who left the group on read", rating: "STANDARD", tag: "theme" },
-      { text: "Fortunes for someone attending their own surprise party", rating: "STANDARD", tag: "theme" },
-    ],
-    seedCriteria: [
-      { label: "Most Cursed", rating: "STANDARD", hint: "You will think about this later." },
-    ],
-  },
-
-  "red-flag-rally": {
-    id: "red-flag-rally",
-    name: "Red Flag Rally",
-    tagline: "Turn a red flag into a green flag. Somehow.",
-    description:
-      "A suspicious trait arrives. Write a context that flips it from red flag to green flag. Voters pick the most convincing flip.",
-    scoring: "take",
-    flow: "standard",
-    submissionKind: "TEXT",
-    secretCriterion: false,
-    usesCriterion: true,
-    submissionPlaceholder: "Make it make sense…",
-    submissionLabel: "Your flip",
-    voteInstruction: () => "Whose flip is the most believable?",
-    revealKicker: "FLIP THE FLAG",
-    accent: "neon",
-    seedPrompts: [
-      { text: "They have 47 unread voicemails from their mom.", rating: "FAMILY", tag: "flag" },
-      { text: "They eat pizza with a knife and fork.", rating: "FAMILY", tag: "flag" },
-      { text: "They own six identical sweaters.", rating: "FAMILY", tag: "flag" },
-      { text: "They refuse to take any photo with their eyes closed.", rating: "FAMILY", tag: "flag" },
-      { text: "They alphabetise their fridge.", rating: "FAMILY", tag: "flag" },
-      { text: "They carry two phones on a first date.", rating: "STANDARD", tag: "flag" },
-      { text: "They only reply to texts exactly four hours later.", rating: "STANDARD", tag: "flag" },
-      { text: "They have a spreadsheet of their exes' pets.", rating: "STANDARD", tag: "flag" },
-      { text: "They narrate their own cooking in third person.", rating: "FAMILY", tag: "flag" },
-      { text: "They never sit with their back to the door.", rating: "STANDARD", tag: "flag" },
-      { text: "They refer to their cat as 'my lawyer'.", rating: "FAMILY", tag: "flag" },
-      { text: "They know the WiFi password of every café in town.", rating: "FAMILY", tag: "flag" },
-    ],
-    seedCriteria: [
-      { label: "Most Convincing Flip", rating: "FAMILY", hint: "You actually bought it." },
-    ],
-  },
-
-  "doodle-dash": {
-    id: "doodle-dash",
-    name: "Doodle Dash",
-    tagline: "Draw the prompt. Nail the vibe. No skill required.",
-    description:
-      "Each round, everyone gets the same prompt and 60 seconds to doodle it on their phone. Drawings are revealed anonymously on the big screen — vote for the one that nails the spirit.",
-    scoring: "take",
-    flow: "standard",
-    submissionKind: "DRAWING",
-    secretCriterion: false,
-    usesCriterion: true,
-    submissionPlaceholder: "Tap to draw…",
-    submissionLabel: "Your drawing",
-    voteInstruction: () => "Which doodle wins the room?",
-    revealKicker: "DOODLES DROPPED",
-    submitSeconds: 60,
-    voteSeconds: 25,
-    accent: "neon",
-    seedPrompts: [
-      { text: "A pirate at the laundromat", rating: "FAMILY", tag: "scene" },
-      { text: "A dinosaur trying to text", rating: "FAMILY", tag: "scene" },
-      { text: "A ghost on their coffee break", rating: "FAMILY", tag: "scene" },
-      { text: "A squirrel with a plan", rating: "FAMILY", tag: "scene" },
-      { text: "An alien's first sandwich", rating: "FAMILY", tag: "scene" },
-      { text: "A wizard stuck in traffic", rating: "FAMILY", tag: "scene" },
-      { text: "A robot doing yoga", rating: "FAMILY", tag: "scene" },
-      { text: "A penguin as a stand-up comedian", rating: "FAMILY", tag: "scene" },
-      { text: "A cowboy in a library", rating: "FAMILY", tag: "scene" },
-      { text: "A chef who only cooks breakfast", rating: "FAMILY", tag: "scene" },
-      { text: "A cat running a yard sale", rating: "FAMILY", tag: "scene" },
-      { text: "A vampire at a pool party", rating: "STANDARD", tag: "scene" },
-    ],
-    seedCriteria: [
-      { label: "Best Doodle", rating: "FAMILY", hint: "Nails the prompt. Extra style." },
-    ],
-  },
-
-  "tap-rally": {
-    id: "tap-rally",
-    name: "Tap Rally",
-    tagline: "No typing. No voting. Just speed.",
-    description:
-      "Targets fly across your phone. Tap them as fast as you can before they escape. The screen is chaos. Highest score on the board wins the round — leaderboard updates live.",
-    scoring: "reaction",
-    flow: "reaction",
-    submissionKind: "TAP",
-    secretCriterion: false,
-    usesCriterion: false,
-    submissionPlaceholder: "Tap the targets!",
-    submissionLabel: "Score",
-    voteInstruction: () => "",
-    revealKicker: "TAP RACE",
-    submitSeconds: 25,
-    accent: "ember",
-    seedPrompts: [
-      { text: "Speed Round", rating: "FAMILY", tag: "pace", detail: "Fast spawns, short lifetimes." },
-      { text: "Steady Aim", rating: "FAMILY", tag: "pace", detail: "Slower targets, bigger combos." },
-      { text: "Chaos Burst", rating: "FAMILY", tag: "pace", detail: "Targets everywhere, all at once." },
-      { text: "Sniper Alley", rating: "FAMILY", tag: "pace", detail: "Small targets, big points." },
-      { text: "Big Flash", rating: "FAMILY", tag: "pace", detail: "Large targets, rapid-fire." },
-      { text: "Grand Rally", rating: "FAMILY", tag: "pace", detail: "Mixed speeds, full chaos." },
-    ],
-  },
-
-  "wager-royale": {
-    id: "wager-royale",
-    name: "Wager Royale",
-    tagline: "Know the answer? Bet on yourself.",
-    description:
-      "A trivia question drops. Pick your answer from four choices. Then set your wager — 100 to 1000 points. Correct wins your wager. Wrong costs it. Bold bets, big leaderboard swings.",
-    scoring: "quiz",
-    flow: "quiz",
-    submissionKind: "QUIZ",
-    secretCriterion: false,
-    usesCriterion: false,
-    submissionPlaceholder: "Pick one…",
-    submissionLabel: "Your answer",
-    voteInstruction: () => "",
-    revealKicker: "THE TRUTH IS",
-    submitSeconds: 25,
-    revealSeconds: 6,
-    accent: "sol",
-    seedPrompts: [
-      {
-        text: "Which of these creatures has three hearts?",
-        choices: ["Octopus", "Giraffe", "Jellyfish", "Flamingo"],
-        truth: "Octopus",
-        rating: "FAMILY",
-        tag: "biology",
-      },
-      {
-        text: "Which planet has the most moons?",
-        choices: ["Jupiter", "Saturn", "Uranus", "Neptune"],
-        truth: "Saturn",
-        rating: "FAMILY",
-        tag: "space",
-        detail: "Counting confirmed natural satellites.",
-      },
-      {
-        text: "A 'murmuration' describes a group of what?",
-        choices: ["Owls", "Starlings", "Bats", "Bees"],
-        truth: "Starlings",
-        rating: "FAMILY",
-        tag: "nature",
-      },
-      {
-        text: "Which instrument has exactly 88 keys?",
-        choices: ["Piano", "Harpsichord", "Accordion", "Organ"],
-        truth: "Piano",
-        rating: "FAMILY",
-        tag: "music",
-      },
-      {
-        text: "Which country has the most time zones?",
-        choices: ["United States", "Russia", "France", "China"],
-        truth: "France",
-        rating: "FAMILY",
-        tag: "geography",
-        detail: "Counting overseas territories.",
-      },
-      {
-        text: "Honey never does what?",
-        choices: ["Crystallize", "Spoil", "Dissolve", "Freeze"],
-        truth: "Spoil",
-        rating: "FAMILY",
-        tag: "food",
-      },
-      {
-        text: "Which common fruit is botanically a berry?",
-        choices: ["Strawberry", "Raspberry", "Banana", "Blackberry"],
-        truth: "Banana",
-        rating: "FAMILY",
-        tag: "food",
-      },
-      {
-        text: "Which language has the most native speakers worldwide?",
-        choices: ["English", "Hindi", "Spanish", "Mandarin Chinese"],
-        truth: "Mandarin Chinese",
-        rating: "FAMILY",
-        tag: "language",
-      },
-      {
-        text: "Which of these is *not* actually an element on the periodic table?",
-        choices: ["Mercury", "Promethium", "Unobtainium", "Einsteinium"],
-        truth: "Unobtainium",
-        rating: "FAMILY",
-        tag: "science",
-      },
-      {
-        text: "In chess, which piece can only move diagonally?",
-        choices: ["Knight", "Rook", "Bishop", "Queen"],
-        truth: "Bishop",
-        rating: "FAMILY",
-        tag: "games",
-      },
-      {
-        text: "The tallest waterfall in the world is in which country?",
-        choices: ["Brazil", "Norway", "Venezuela", "South Africa"],
-        truth: "Venezuela",
-        rating: "FAMILY",
-        tag: "geography",
-      },
-      {
-        text: "What is the only mammal capable of true flight?",
-        choices: ["Flying squirrel", "Sugar glider", "Bat", "Colugo"],
-        truth: "Bat",
-        rating: "FAMILY",
-        tag: "biology",
-      },
-    ],
-  },
-
-  "guesspionage": {
+  guesspionage: {
     id: "guesspionage",
     name: "Guesspionage",
-    tagline: "Slide to guess. Closest number wins.",
+    tagline: "Guess the percentage. Closest wins.",
     description:
-      "A spicy 'what percent of people…' question lands on the TV. Everyone slides to their best guess on their phone. Closer to the real answer = more points. Bullseye within 3% = massive bonus.",
+      "A survey question appears. Everyone secretly guesses 0–100%. Points scale with how close you land, big bonus for bullseyes.",
     scoring: "percent",
     flow: "quiz",
     submissionKind: "PERCENT",
     secretCriterion: false,
     usesCriterion: false,
-    submissionPlaceholder: "Slide to your guess…",
+    submissionPlaceholder: "Your guess",
     submissionLabel: "Your guess",
     voteInstruction: () => "",
-    revealKicker: "THE REAL NUMBER IS…",
+    revealKicker: "REAL ANSWER",
     submitSeconds: 30,
-    revealSeconds: 8,
-    accent: "orchid",
-    seedPrompts: [
-      {
-        text: "What percent of people admit they've sung in the shower this week?",
-        truth: "68",
-        rating: "FAMILY",
-        tag: "habit",
-      },
-      {
-        text: "What percent of adults say they regret one item in their closet right now?",
-        truth: "57",
-        rating: "FAMILY",
-        tag: "home",
-      },
-      {
-        text: "What percent of office workers have cried at work at least once?",
-        truth: "44",
-        rating: "STANDARD",
-        tag: "work",
-      },
-      {
-        text: "What percent of people check their phone within five minutes of waking up?",
-        truth: "79",
-        rating: "FAMILY",
-        tag: "tech",
-      },
-      {
-        text: "What percent of people have pretended to be on a call to avoid a conversation?",
-        truth: "51",
-        rating: "FAMILY",
-        tag: "social",
-      },
-      {
-        text: "What percent of people have forgotten someone's name mid-introduction?",
-        truth: "72",
-        rating: "FAMILY",
-        tag: "social",
-      },
-      {
-        text: "What percent of drivers have yelled at traffic even when alone in the car?",
-        truth: "65",
-        rating: "FAMILY",
-        tag: "life",
-      },
-      {
-        text: "What percent of adults admit to having a 'junk drawer' at home?",
-        truth: "85",
-        rating: "FAMILY",
-        tag: "home",
-      },
-      {
-        text: "What percent of people say they'd take a fake sick day if they could?",
-        truth: "48",
-        rating: "STANDARD",
-        tag: "work",
-      },
-      {
-        text: "What percent of people have googled themselves in the last month?",
-        truth: "39",
-        rating: "FAMILY",
-        tag: "tech",
-      },
-      {
-        text: "What percent of adults still sleep with a stuffed animal?",
-        truth: "34",
-        rating: "FAMILY",
-        tag: "life",
-      },
-      {
-        text: "What percent of people admit to eating something off the floor in the last year?",
-        truth: "62",
-        rating: "STANDARD",
-        tag: "habit",
-      },
-    ],
-  },
-
-  "group-mentality": {
-    id: "group-mentality",
-    name: "Group Mentality",
-    tagline: "Think like the room. Match the herd.",
-    description:
-      "Everyone sees the same prompt and types the first answer that comes to mind. Points go to the biggest agreement — the more people matched your answer, the bigger the payout. Lone-wolf answers score nothing.",
-    scoring: "herd",
-    flow: "quiz",
-    submissionKind: "TEXT",
-    secretCriterion: false,
-    usesCriterion: false,
-    submissionPlaceholder: "Type the obvious answer…",
-    submissionLabel: "Your answer",
-    voteInstruction: () => "",
-    revealKicker: "HERD COUNT",
-    submitSeconds: 25,
-    revealSeconds: 10,
+    seedPrompts: guesspionagePrompts,
     accent: "sol",
-    seedPrompts: [
-      { text: "Name a fruit that's obviously yellow.", rating: "FAMILY", tag: "word" },
-      { text: "Name a cold thing you'd find in a freezer.", rating: "FAMILY", tag: "word" },
-      { text: "Name a superhero everyone at the table knows.", rating: "FAMILY", tag: "pop" },
-      { text: "Name a sport played on grass.", rating: "FAMILY", tag: "word" },
-      { text: "Name a breakfast food.", rating: "FAMILY", tag: "word" },
-      { text: "Name something you bring to the beach.", rating: "FAMILY", tag: "word" },
-      { text: "Name a farm animal that moos, oinks, or baas.", rating: "FAMILY", tag: "word" },
-      { text: "Name a color that appears in a rainbow.", rating: "FAMILY", tag: "word" },
-      { text: "Name a dance move everyone has tried.", rating: "FAMILY", tag: "pop" },
-      { text: "Name a month that has a major holiday.", rating: "FAMILY", tag: "word" },
-      { text: "Name a vegetable kids universally hate.", rating: "FAMILY", tag: "word" },
-      { text: "Name a common password people shouldn't use.", rating: "STANDARD", tag: "tech" },
-    ],
+    status: "live",
   },
 
-  "trace-race": {
-    id: "trace-race",
-    name: "Trace Race",
-    tagline: "Finger-paint the curve. Accuracy × speed.",
+  "colour-picker": {
+    id: "colour-picker",
+    name: "Colour Picker",
+    tagline: "Match the colour on your phone's wheel.",
     description:
-      "A curve flashes on the big screen and your phone. Trace it on your phone as fast and accurately as possible. The TV shows every player's live progress bar — the track fills as your stroke hits more of the guide.",
-    scoring: "trace",
-    flow: "reaction",
-    submissionKind: "TRACE",
-    secretCriterion: false,
-    usesCriterion: false,
-    submissionPlaceholder: "Trace the curve!",
-    submissionLabel: "Trace",
-    voteInstruction: () => "",
-    revealKicker: "TRACE RESULTS",
-    submitSeconds: 22,
-    accent: "neon",
-    seedPrompts: [
-      { text: "Spiral", rating: "FAMILY", tag: "shape", detail: "Start from the center outwards." },
-      { text: "Star", rating: "FAMILY", tag: "shape", detail: "Five points, one stroke." },
-      { text: "Wave", rating: "FAMILY", tag: "shape", detail: "Smooth sinusoidal flow." },
-      { text: "Heart", rating: "FAMILY", tag: "shape", detail: "One continuous loop." },
-      { text: "Lightning", rating: "FAMILY", tag: "shape", detail: "Sharp zig-zag strike." },
-      { text: "Loop-the-loop", rating: "FAMILY", tag: "shape", detail: "Two stacked circles." },
-    ],
-  },
-
-  "slider-wars": {
-    id: "slider-wars",
-    name: "Slider Wars",
-    tagline: "Three sliders. One target color. Dial it in.",
-    description:
-      "A target color flashes on the big screen. Slide R, G, and B on your phone to match it — by eye. The TV shows every player's live swatch converging toward the target. Closest color banks the round.",
+      "The TV reveals a target colour. Spin your phone's RGB sliders until your swatch matches. Closest submission wins the round.",
     scoring: "color",
     flow: "quiz",
     submissionKind: "COLOR",
     secretCriterion: false,
     usesCriterion: false,
-    submissionPlaceholder: "Match the target color.",
-    submissionLabel: "Your color",
+    submissionPlaceholder: "Dial the colour",
+    submissionLabel: "Your swatch",
     voteInstruction: () => "",
-    revealKicker: "COLOR LAB",
-    submitSeconds: 30,
-    revealSeconds: 8,
+    revealKicker: "TARGET",
+    submitSeconds: 40,
+    seedPrompts: colourTargets,
     accent: "orchid",
-    // `truth` stores the target color as "r,g,b" (0-255 each).
-    seedPrompts: [
-      { text: "Sunset Coral", truth: "255,120,88", rating: "FAMILY", tag: "color" },
-      { text: "Electric Teal", truth: "50,220,200", rating: "FAMILY", tag: "color" },
-      { text: "Plum Royale", truth: "120,60,180", rating: "FAMILY", tag: "color" },
-      { text: "Lemon Pop", truth: "245,235,80", rating: "FAMILY", tag: "color" },
-      { text: "Ocean Night", truth: "24,60,110", rating: "FAMILY", tag: "color" },
-      { text: "Mint Chip", truth: "130,220,150", rating: "FAMILY", tag: "color" },
-      { text: "Cherry Soda", truth: "220,40,80", rating: "FAMILY", tag: "color" },
-      { text: "Orchid Mist", truth: "200,160,230", rating: "FAMILY", tag: "color" },
-      { text: "Burnt Sienna", truth: "180,75,45", rating: "FAMILY", tag: "color" },
-      { text: "Glacier", truth: "180,220,235", rating: "FAMILY", tag: "color" },
-      { text: "Moss Court", truth: "95,140,70", rating: "FAMILY", tag: "color" },
-      { text: "Midnight Rose", truth: "110,20,60", rating: "FAMILY", tag: "color" },
-    ],
+    status: "live",
   },
 
-  "stroke-of-genius": {
-    id: "stroke-of-genius",
-    name: "Stroke of Genius",
-    tagline: "Draw. Guess. Watch it mutate. The chain tells the joke.",
+  "slider-wars": {
+    id: "slider-wars",
+    name: "Slider Wars",
+    tagline: "Three sliders, one target. Nail it.",
     description:
-      "Round 1: you write a seed phrase. Round 2: you receive someone else's phrase and draw it. Round 3: you see a drawing and type what you think it is. The TV reveals each full chain — the mutation is always the punchline.",
-    scoring: "chain",
-    flow: "chain",
-    submissionKind: "TEXT",
+      "Like Colour Picker but the prompts rotate — sometimes it's a colour, sometimes a frequency curve, sometimes a launch angle. Everyone competes simultaneously.",
+    scoring: "color",
+    flow: "quiz",
+    submissionKind: "COLOR",
     secretCriterion: false,
     usesCriterion: false,
-    submissionPlaceholder: "Write a fun seed phrase…",
-    submissionLabel: "Seed phrase",
-    voteInstruction: () => "Vote for the funniest chain.",
-    revealKicker: "CHAIN REVEAL",
-    revealSeconds: 22,
-    voteSeconds: 25,
-    accent: "ember",
-    stages: [
-      {
-        kind: "TEXT",
-        label: "Seed phrase",
-        placeholder: "e.g. A cat running for mayor",
-        seconds: 25,
-        targetRouting: "prompt-bank",
-        helper: "Short + visual. Three to eight words works best.",
-      },
-      {
-        kind: "DRAWING",
-        label: "Draw this",
-        placeholder: "Tap to draw…",
-        seconds: 55,
-        targetRouting: "from-prev",
-        helper: "Somebody else wrote this. Draw it as you see it.",
-      },
-      {
-        kind: "TEXT",
-        label: "What is this?",
-        placeholder: "Type what the drawing shows…",
-        seconds: 25,
-        targetRouting: "from-prev",
-        helper: "You're looking at somebody else's drawing. Guess the original phrase.",
-      },
-    ],
-    seedPrompts: [
-      { text: "A pirate at the laundromat", rating: "FAMILY", tag: "seed" },
-      { text: "A dragon reading bedtime stories", rating: "FAMILY", tag: "seed" },
-      { text: "A raccoon presenting a slide deck", rating: "FAMILY", tag: "seed" },
-      { text: "An astronaut walking a goldfish", rating: "FAMILY", tag: "seed" },
-      { text: "A wizard stuck in traffic", rating: "FAMILY", tag: "seed" },
-      { text: "A cowboy at a yoga class", rating: "FAMILY", tag: "seed" },
-      { text: "A chef cooking on a skateboard", rating: "FAMILY", tag: "seed" },
-      { text: "A ghost doing taxes", rating: "FAMILY", tag: "seed" },
-      { text: "A robot asking for directions", rating: "FAMILY", tag: "seed" },
-      { text: "A shark running a lemonade stand", rating: "FAMILY", tag: "seed" },
-      { text: "An octopus playing drums", rating: "FAMILY", tag: "seed" },
-      { text: "A vampire at a pool party", rating: "STANDARD", tag: "seed" },
-    ],
+    submissionPlaceholder: "Dial the sliders",
+    submissionLabel: "Your submission",
+    voteInstruction: () => "",
+    revealKicker: "TARGET",
+    submitSeconds: 35,
+    seedPrompts: sliderWarsPrompts,
+    accent: "neon",
+    status: "live",
   },
 
-  "mash-up-doodle": {
-    id: "mash-up-doodle",
-    name: "Mash-Up Doodle",
-    tagline: "Draw an icon. Write a slogan. Random mash-ups. Vote.",
+  "tap-rally": {
+    id: "tap-rally",
+    name: "Tap Rally",
+    tagline: "Tap every target before it fades.",
     description:
-      "Everyone draws a tiny icon. Then everyone writes a punchy slogan. The TV mashes random icon + slogan pairs into t-shirts. Vote for the best combo. Both halves of the winner score.",
-    scoring: "combo",
-    flow: "combo",
+      "Targets pop up on your phone — tap fast. Everyone plays simultaneously, fastest reflexes win the round. Supports solo high-score chasing.",
+    scoring: "reaction",
+    flow: "reaction",
+    submissionKind: "TAP",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "FINAL SCORES",
+    submitSeconds: 20,
+    seedPrompts: [
+      { text: "Tap every target before it fades.", rating: "FAMILY" },
+      { text: "Warm up those thumbs — every miss hurts.", rating: "FAMILY" },
+      { text: "Final sprint — bank as many hits as you can.", rating: "FAMILY" },
+    ],
+    accent: "ember",
+    status: "live",
+  },
+
+  "doodle-dash": {
+    id: "doodle-dash",
+    name: "Doodle Dash",
+    tagline: "Race to draw it first — votes decide the best.",
+    description:
+      "A prompt appears, everyone races to draw it before the timer. All sketches hit the big screen, the room votes for the best.",
+    scoring: "take",
+    flow: "standard",
+    submissionKind: "DRAWING",
+    secretCriterion: true,
+    usesCriterion: true,
+    submissionPlaceholder: "Draw it",
+    submissionLabel: "Your doodle",
+    voteInstruction: (c) =>
+      c ? `Vote for the ${c.toLowerCase()} doodle.` : "Vote for your favourite doodle.",
+    revealKicker: "DOODLES REVEALED",
+    submitSeconds: 60,
+    seedPrompts: doodleDashPrompts,
+    seedCriteria: [
+      { label: "Funniest", rating: "FAMILY" },
+      { label: "Most Cursed", rating: "FAMILY" },
+      { label: "Most Chaotic", rating: "FAMILY" },
+      { label: "Most Heartwarming", rating: "FAMILY" },
+      { label: "Hardest to Identify", rating: "FAMILY" },
+    ],
+    accent: "neon",
+    status: "live",
+  },
+
+  counterfeit: {
+    id: "counterfeit",
+    name: "Counterfeit",
+    tagline: "Flash, memorise, redraw.",
+    description:
+      "The TV flashes a scene for a few seconds. Everyone redraws it from memory on their phone. Room votes for the most accurate reproduction.",
+    scoring: "take",
+    flow: "standard",
+    submissionKind: "DRAWING",
+    secretCriterion: false,
+    usesCriterion: true,
+    submissionPlaceholder: "Draw what you saw",
+    submissionLabel: "Your reproduction",
+    voteInstruction: () => "Vote for the most accurate copy.",
+    revealKicker: "COUNTERFEITS",
+    submitSeconds: 60,
+    revealSeconds: 10,
+    seedPrompts: counterfeitPrompts,
+    seedCriteria: [
+      { label: "Most Accurate", rating: "FAMILY" },
+      { label: "Best Vibe", rating: "FAMILY" },
+    ],
+    accent: "sol",
+    status: "live",
+  },
+
+  // ===== COMING SOON — stubbed, will light up across follow-up sessions.
+
+  chicken: {
+    id: "chicken",
+    name: "Chicken",
+    tagline: "Hold to build. Release before it maxes.",
+    description:
+      "A bar fills on the TV. Hold your phone button to score — release before it hits the top or lose the round. Last to release with a valid score gets a bonus.",
+    scoring: "hold",
+    flow: "reaction",
+    submissionKind: "TAP", // placeholder; real "HOLD" kind lands with the build
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "WHO CHICKENED OUT",
+    seedPrompts: [],
+    accent: "ember",
+    status: "comingSoon",
+    comingSoonNote: "Needs hold-and-release phone input + live TV bar.",
+  },
+
+  "pixel-war": {
+    id: "pixel-war",
+    name: "Pixel War",
+    tagline: "One shared canvas. Everyone fights for pixels.",
+    description:
+      "A grid canvas lives on the TV. Each player secretly draws a different thing on the same pixels. Everyone guesses what everyone else was making at the end.",
+    scoring: "pixel",
+    flow: "standard",
     submissionKind: "DRAWING",
     secretCriterion: false,
     usesCriterion: false,
-    submissionPlaceholder: "Tap to draw…",
-    submissionLabel: "Your icon",
-    voteInstruction: () => "Which t-shirt is the winner?",
-    revealKicker: "MASH-UPS INCOMING",
-    revealSeconds: 12,
-    voteSeconds: 25,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "THE CANVAS",
+    seedPrompts: [],
+    accent: "orchid",
+    status: "comingSoon",
+    comingSoonNote: "Needs live shared canvas + guessing round.",
+  },
+
+  traced: {
+    id: "traced",
+    name: "Traced",
+    tagline: "One line, no lifting. Guess what it is.",
+    description:
+      "One player draws with a single continuous line while everyone else buzzes in to guess. Drawer rotates each round so everyone gets a turn.",
+    scoring: "chain",
+    flow: "chain",
+    submissionKind: "DRAWING",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "TRACED",
+    seedPrompts: [],
+    accent: "neon",
+    status: "comingSoon",
+    comingSoonNote: "Needs single-stroke canvas + buzzer/guess flow.",
+  },
+
+  "face-off": {
+    id: "face-off",
+    name: "Face Off",
+    tagline: "Snap the selfie. Room picks the best.",
+    description:
+      "A prompt appears — 'angriest face', 'most serene', 'surprise attack'. Everyone snaps a selfie, all photos hit the TV gallery, room votes.",
+    scoring: "photo",
+    flow: "standard",
+    submissionKind: "DRAWING", // placeholder; real "PHOTO" kind lands with the build
+    secretCriterion: false,
+    usesCriterion: true,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: (c) =>
+      c ? `Vote for the ${c.toLowerCase()}.` : "Vote for the best photo.",
+    revealKicker: "GALLERY",
+    seedPrompts: [],
+    accent: "ember",
+    status: "comingSoon",
+    comingSoonNote: "Needs PHOTO submission kind + TV photo gallery.",
+  },
+
+  "tilt-racer": {
+    id: "tilt-racer",
+    name: "Tilt Racer",
+    tagline: "Tilt your phone. Steer on the TV.",
+    description:
+      "Race / bumper-cars on the big screen by tilting your phone. 3–10 players scale naturally — more chaos the more racers.",
+    scoring: "tilt",
+    flow: "reaction",
+    submissionKind: "TAP", // placeholder
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "FINISH LINE",
+    seedPrompts: [],
+    accent: "neon",
+    status: "comingSoon",
+    comingSoonNote: "Needs gyroscope input + TV race/physics sim.",
+  },
+
+  "reflex-roulette": {
+    id: "reflex-roulette",
+    name: "Reflex Roulette",
+    tagline: "Names cycle. Tap when it's yours.",
+    description:
+      "Player names flash through a roulette on the TV. Tap the instant your name lands — faster reaction = higher score.",
+    scoring: "reflex",
+    flow: "reaction",
+    submissionKind: "TAP", // placeholder
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "REACTIONS",
+    seedPrompts: [],
     accent: "sol",
-    stages: [
-      {
-        kind: "DRAWING",
-        label: "Draw an icon",
-        placeholder: "Tap to draw an icon…",
-        seconds: 45,
-      },
-      {
-        kind: "TEXT",
-        label: "Write a slogan",
-        placeholder: "A punchy one-liner…",
-        seconds: 30,
-      },
-    ],
-    seedPrompts: [
-      { text: "Merch Drop", rating: "FAMILY", tag: "theme" },
-      { text: "Street Line", rating: "FAMILY", tag: "theme" },
-      { text: "Festival Capsule", rating: "FAMILY", tag: "theme" },
-      { text: "Fake Band Tour", rating: "FAMILY", tag: "theme" },
-      { text: "Cursed Cafe", rating: "FAMILY", tag: "theme" },
-      { text: "Weekend Uniform", rating: "FAMILY", tag: "theme" },
-    ],
+    status: "comingSoon",
+    comingSoonNote: "Needs name-roulette TV animation + instant-tap input.",
+  },
+
+  "sync-up": {
+    id: "sync-up",
+    name: "Sync Up",
+    tagline: "Tap in time with the pattern.",
+    description:
+      "A visual rhythm pattern plays on the TV. Everyone taps their phone to match. Scored independently on precision.",
+    scoring: "rhythm",
+    flow: "reaction",
+    submissionKind: "TAP", // placeholder
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "PRECISION",
+    seedPrompts: [],
+    accent: "orchid",
+    status: "comingSoon",
+    comingSoonNote: "Needs rhythm pattern generator + timing capture.",
+  },
+
+  alibi: {
+    id: "alibi",
+    name: "Alibi",
+    tagline: "Two suspects. The rest grill them.",
+    description:
+      "Two players are the suspects with a shared story. Everyone else is the interrogator trying to find the holes. Roles rotate each round.",
+    scoring: "alibi",
+    flow: "standard",
+    submissionKind: "TEXT",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "VERDICT",
+    seedPrompts: [],
+    accent: "ember",
+    status: "comingSoon",
+    comingSoonNote: "Needs role rotation + interrogation Q&A flow.",
+  },
+
+  saboteur: {
+    id: "saboteur",
+    name: "Saboteur",
+    tagline: "Everyone builds the thing. One of you doesn't.",
+    description:
+      "Each player controls a cursor contributing to a collaborative task. One secret saboteur tries to screw it up without being caught.",
+    scoring: "saboteur",
+    flow: "standard",
+    submissionKind: "TEXT",
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "UNMASKING",
+    seedPrompts: [],
+    accent: "neon",
+    status: "comingSoon",
+    comingSoonNote: "Needs live cursor collab + secret role assignment.",
+  },
+
+  shockwave: {
+    id: "shockwave",
+    name: "Shockwave",
+    tagline: "Radar sweeps. Tap when it hits your zone.",
+    description:
+      "A radar pulse rotates around the TV. Each player owns a slice — tap the instant the pulse hits yours.",
+    scoring: "zone",
+    flow: "reaction",
+    submissionKind: "TAP", // placeholder
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "ON THE PULSE",
+    seedPrompts: [],
+    accent: "neon",
+    status: "comingSoon",
+    comingSoonNote: "Needs radar TV animation + zone-slice assignment.",
+  },
+
+  "land-grab": {
+    id: "land-grab",
+    name: "Land Grab",
+    tagline: "Secretly claim tiles. Collisions lose the tile.",
+    description:
+      "A grid map appears on the TV. Everyone secretly picks tiles to claim. Collisions cancel out. More players = more mind games.",
+    scoring: "tile",
+    flow: "standard",
+    submissionKind: "TEXT", // placeholder
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "THE MAP",
+    seedPrompts: [],
+    accent: "sol",
+    status: "comingSoon",
+    comingSoonNote: "Needs interactive grid map + claim resolution.",
+  },
+
+  avalanche: {
+    id: "avalanche",
+    name: "Avalanche",
+    tagline: "Shared Tetris. Majority vote controls the piece.",
+    description:
+      "Tetris blocks fall on the TV. Everyone's phone input is collected and the majority move wins. Alliances, sabotage, pure chaos.",
+    scoring: "avalanche",
+    flow: "reaction",
+    submissionKind: "TAP", // placeholder
+    secretCriterion: false,
+    usesCriterion: false,
+    submissionPlaceholder: "",
+    submissionLabel: "",
+    voteInstruction: () => "",
+    revealKicker: "STACKED",
+    seedPrompts: [],
+    accent: "orchid",
+    status: "comingSoon",
+    comingSoonNote: "Needs Tetris engine on TV + majority-vote controls.",
   },
 };
 
 export const GAME_LIST: GameDefinition[] = Object.values(GAMES);
 
+// The fallback when a Room row references a legacy gameId that's no
+// longer in the registry. Pick the first live game in declaration order.
+const FALLBACK_GAME_ID: string =
+  GAME_LIST.find((g) => g.status === "live")?.id ?? GAME_LIST[0].id;
+
 export function getGame(id: string): GameDefinition {
-  return GAMES[id] ?? GAMES["hot-take-hustle"];
+  return GAMES[id] ?? GAMES[FALLBACK_GAME_ID];
+}
+
+export function isLive(id: string): boolean {
+  return GAMES[id]?.status === "live";
+}
+
+export function firstLiveGameId(): string {
+  return FALLBACK_GAME_ID;
 }
