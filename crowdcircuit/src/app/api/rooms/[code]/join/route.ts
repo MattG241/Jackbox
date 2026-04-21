@@ -3,7 +3,7 @@ import { customAlphabet } from "nanoid";
 import { prisma } from "@/lib/db";
 import { isDisplayNameOk } from "@/lib/moderation";
 import { joinRoomSchema } from "@/lib/validation";
-import { DEFAULTS } from "@/server/roomManager";
+import { DEFAULTS, getRoomByCode } from "@/server/roomManager";
 
 const tokenGen = customAlphabet(
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
@@ -82,6 +82,23 @@ export async function POST(
     },
   });
 
+  // First-scanner-is-host: if the room has no host yet and this player is
+  // playing (not audience), promote them to host. They still play normally
+  // — host just means "can start the match and tweak settings." The TV is
+  // display-only and is never host.
+  let promotedToHost = false;
+  if (!room.hostPlayerId && !asAudience) {
+    await prisma.room.update({
+      where: { id: room.id },
+      data: { hostPlayerId: player.id },
+    });
+    // Mirror the change into the in-memory LiveRoom if it's already loaded,
+    // so the socket layer sees the new host immediately on auth:resume.
+    const live = getRoomByCode(code);
+    if (live) live.hostPlayerId = player.id;
+    promotedToHost = true;
+  }
+
   return NextResponse.json({
     code,
     session: {
@@ -89,7 +106,7 @@ export async function POST(
       playerId: player.id,
       displayName: player.displayName,
       isAudience: player.isAudience,
-      isHost: false,
+      isHost: promotedToHost,
       isRemote: false,
       roomCode: code,
     },

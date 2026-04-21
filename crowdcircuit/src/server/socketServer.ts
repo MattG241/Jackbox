@@ -44,6 +44,35 @@ export function attachSocketServer(httpServer: HttpServer): IO {
   });
 
   io.on("connection", (socket) => {
+    // The TV (and any other read-only display) joins with just the room
+    // code — no session, no Player. This is the hostless TV entry point.
+    // The socket gets added to the room channel so broadcasts hit it, and
+    // a fresh snapshot is pushed back immediately.
+    socket.on("display:join", async ({ code }, cb) => {
+      try {
+        const normalized = (code ?? "").toUpperCase();
+        if (!normalized || normalized.length < 3) {
+          return cb({ ok: false, reason: "Invalid room code." });
+        }
+        const room = await ensureRoomLoaded(normalized);
+        if (!room) {
+          return cb({ ok: false, reason: "Room not found." });
+        }
+        socket.join(`room:${room.code}`);
+        room.sockets.add(socket.id);
+        cb({ ok: true });
+        // Send a snapshot straight to this socket so the TV renders
+        // immediately without waiting for the next broadcast.
+        const { buildSnapshot } = await import("./roomManager");
+        const snap = await buildSnapshot(room);
+        socket.emit("room:state", snap);
+      } catch (err) {
+        const reason =
+          err instanceof Error ? err.message : "Failed to join display.";
+        cb({ ok: false, reason });
+      }
+    });
+
     socket.on("auth:resume", async ({ sessionToken }, cb) => {
       try {
         const player = await prisma.player.findUnique({

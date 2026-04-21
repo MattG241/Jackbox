@@ -182,6 +182,13 @@ export interface SessionHandshake {
 // Socket.IO event map — strongly typed in both client and server.
 export interface ClientToServerEvents {
   "auth:resume": (p: { sessionToken: string }, cb: (res: AuthResult) => void) => void;
+  // Display-only clients (the TV) subscribe to a room's socket channel
+  // without a player session. They just receive room:state updates and
+  // can't send host commands — all control happens on phones.
+  "display:join": (
+    p: { code: string },
+    cb: (res: DisplayJoinResult) => void
+  ) => void;
   "host:startMatch": (cb: (res: ActionResult) => void) => void;
   "host:nextPhase": (cb: (res: ActionResult) => void) => void;
   "host:updateSettings": (
@@ -211,6 +218,10 @@ export interface ServerToClientEvents {
 
 export type AuthResult =
   | { ok: true; session: SessionHandshake }
+  | { ok: false; reason: string };
+
+export type DisplayJoinResult =
+  | { ok: true }
   | { ok: false; reason: string };
 
 export type ActionResult = { ok: true } | { ok: false; reason: string };

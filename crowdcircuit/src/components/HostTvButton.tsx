@@ -2,8 +2,11 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { saveRemoteToken, saveSession } from "@/lib/session";
+import { saveRemoteToken } from "@/lib/session";
 
+// "Host on this TV" — creates a hostless room and navigates the TV to
+// /host/[code]. The TV never holds a player session; the first phone to
+// scan the join QR becomes the room's host (and still plays normally).
 export function HostTvButton({
   className,
   label = "Host on this TV (scan to join)",
@@ -23,12 +26,12 @@ export function HostTvButton({
       const res = await fetch("/api/rooms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hostIsAudience: true }),
+        // No body fields needed — the TV is display-only.
+        body: JSON.stringify({}),
       });
       const text = await res.text();
       let json: {
         code?: string;
-        session?: unknown;
         remoteToken?: string;
         error?: unknown;
       } = {};
@@ -47,7 +50,8 @@ export function HostTvButton({
         setError(reason);
         return;
       }
-      saveSession(json.session as never);
+      // Stash the optional "Host remote" token so the TV can show that
+      // QR on reload. Not required — the first scanner is host anyway.
       if (json.code && json.remoteToken) {
         saveRemoteToken(json.code, json.remoteToken);
       }

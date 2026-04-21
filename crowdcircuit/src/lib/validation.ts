@@ -5,13 +5,14 @@ const avatarColorValues = AVATAR_COLORS.map((c) => c.color) as [string, ...strin
 const avatarEmojiValues = AVATAR_EMOJIS as unknown as [string, ...string[]];
 
 export const createRoomSchema = z.object({
-  hostName: z.string().min(1).max(20).optional(),
+  // All fields are optional — the TV is display-only and has no host
+  // Player. The first person to scan the join QR becomes the room's host.
   familyMode: z.boolean().optional().default(false),
   streamerMode: z.boolean().optional().default(false),
+  // Legacy fields kept for older clients; ignored by the current server.
+  hostName: z.string().min(1).max(20).optional(),
   avatarColor: z.enum(avatarColorValues).optional(),
   avatarEmoji: z.enum(avatarEmojiValues).optional(),
-  // When true, the host is a non-playing TV display. Core players all
-  // join via QR from their phones.
   hostIsAudience: z.boolean().optional().default(false),
 });
 

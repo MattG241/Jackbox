@@ -28,9 +28,11 @@ function currentGame(snapshot: RoomSnapshot | null): GameCard | null {
 // (start match, advance phase, end match) live on the paired phone remote;
 // the TV itself is display-only.
 export function HostView() {
-  const { snapshot, session } = useRoomStore();
+  const { snapshot } = useRoomStore();
 
-  if (!snapshot || !session) return <FullscreenLoader />;
+  // The TV has no session — it's display-only. Wait for the first snapshot
+  // from the room before rendering anything.
+  if (!snapshot) return <FullscreenLoader />;
 
   return (
     <main className="flex h-[100dvh] w-full flex-col overflow-hidden bg-gradient-to-br from-black via-[#0b0314] to-black">
