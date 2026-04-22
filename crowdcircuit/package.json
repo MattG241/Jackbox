@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx watch server.ts",
     "build": "prisma generate && next build",
-    "start": "prisma db push --skip-generate --accept-data-loss && tsx prisma/seed.ts && NODE_ENV=production tsx server.ts",
+    "start": "node scripts/wait-for-db.mjs && prisma db push --skip-generate --accept-data-loss && tsx prisma/seed.ts && NODE_ENV=production tsx server.ts",
     "lint": "next lint",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
