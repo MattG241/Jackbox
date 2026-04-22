@@ -96,7 +96,8 @@ export type GameSubmissionKind =
   | "TAP"
   | "PERCENT"
   | "TRACE"
-  | "COLOR";
+  | "COLOR"
+  | "HOLD";
 export type GameScoring =
   | "take"
   | "fib"

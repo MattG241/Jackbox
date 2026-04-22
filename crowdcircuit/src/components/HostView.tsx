@@ -272,7 +272,9 @@ function SubmitPanel({ game }: { game: GameCard | null }) {
       {isColor && r.truth && <TargetColorSwatch colorCsv={r.truth} />}
       {isTrace && r.prompt && <TraceGuidePreview name={r.prompt} />}
       <p className="mt-3 text-mist/60">
-        {isTap
+        {game?.id === "chicken"
+          ? "Press and hold on your phone. Release before the bar caps — or bust."
+          : isTap
           ? "Phones are the race track. Tap everything that pops."
           : isPercent
           ? "Slide to your best guess. Closest to the real number wins."

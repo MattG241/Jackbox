@@ -1038,6 +1038,43 @@ async function enterScorePhase(io: IO, room: LiveRoom) {
         add(ranked[1].playerId, 250, "tap_second");
       }
     }
+  } else if (def.scoring === "hold") {
+    // Chicken: held-long-without-busting wins. Bust → zero. Participation
+    // kicker so even busts feel less punitive; longest valid hold gets a
+    // clutch "held their nerve" bonus, runner-up gets half of that.
+    interface HoldPayload {
+      playerId: string;
+      heldMs: number;
+      busted: boolean;
+    }
+    const parsed: HoldPayload[] = [];
+    for (const s of submissions) {
+      let p: { heldMs?: unknown; busted?: unknown } = {};
+      try {
+        p = JSON.parse(s.text);
+      } catch {
+        // treat malformed payloads as busts
+      }
+      parsed.push({
+        playerId: s.playerId,
+        heldMs: Math.max(0, Math.min(60_000, Math.round(Number(p?.heldMs) || 0))),
+        busted: Boolean(p?.busted),
+      });
+      add(s.playerId, 50, "hold_participation");
+    }
+    for (const p of parsed) {
+      if (p.busted) continue;
+      // Score = heldMs / 10 so ~9000ms hold banks 900. Capped by the bar
+      // duration anyway; we clamp to 1500 for safety.
+      const pts = Math.max(0, Math.min(1500, Math.round(p.heldMs / 10)));
+      if (pts > 0) add(p.playerId, pts, "hold_score");
+    }
+    const valid = parsed.filter((p) => !p.busted && p.heldMs > 0);
+    valid.sort((a, b) => b.heldMs - a.heldMs);
+    if (valid.length > 0) {
+      add(valid[0].playerId, 500, "hold_held_nerve");
+      if (valid.length > 1) add(valid[1].playerId, 250, "hold_runner_up");
+    }
   } else if (def.scoring === "chain") {
     // Stroke of Genius: every participant across every stage gets a
     // participation kicker; the winning chain's origin + every actor in it
@@ -1517,6 +1554,18 @@ export async function playerSubmit(
     const misses = Math.max(0, Math.min(9999, Math.round(Number(parsed.misses) || 0)));
     const fastestMs = Math.max(0, Math.min(60000, Math.round(Number(parsed.fastestMs) || 0)));
     storedText = JSON.stringify({ score, hits, misses, fastestMs });
+  } else if (def.submissionKind === "HOLD") {
+    // Chicken payload: how long they held + whether the bar maxed out.
+    // Bust = held all the way to the cap; scores zero regardless of heldMs.
+    let parsed: { heldMs?: unknown; busted?: unknown };
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Hold payload was malformed.");
+    }
+    const heldMs = Math.max(0, Math.min(60_000, Math.round(Number(parsed.heldMs) || 0)));
+    const busted = Boolean(parsed.busted);
+    storedText = JSON.stringify({ heldMs, busted });
   }
 
   const stage = room.round.stage;

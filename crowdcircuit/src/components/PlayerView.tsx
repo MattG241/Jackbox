@@ -517,6 +517,7 @@ function SubmitCard({
   if (kind === "PERCENT") return <PercentSubmit submitted={submitted} game={game} />;
   if (kind === "TRACE") return <TraceSubmit submitted={submitted} game={game} />;
   if (kind === "COLOR") return <ColorSubmit submitted={submitted} game={game} />;
+  if (kind === "HOLD") return <HoldSubmit submitted={submitted} game={game} />;
   return <TextSubmit submitted={submitted} game={game} target={target} />;
 }
 
@@ -1121,6 +1122,174 @@ function TapSubmit({ submitted, game }: { submitted: boolean; game: GameCard }) 
         >
           Bank score now
         </button>
+      )}
+    </div>
+  );
+}
+
+// Chicken — press and hold a big red button. A bar on the button fills
+// from 0 → CAP over CHICKEN_CAP_MS. Release before max to bank a valid
+// score; hold to max and you bust (heldMs recorded, busted flag set,
+// server scores zero). Pointer leaving the button also releases, so a
+// palm-slip counts as a release rather than a cheat.
+const CHICKEN_CAP_MS = 10_000;
+function HoldSubmit({ submitted, game }: { submitted: boolean; game: GameCard }) {
+  const { snapshot } = useRoomStore();
+  const round = snapshot?.round;
+  const [holding, setHolding] = useState(false);
+  const [heldMs, setHeldMs] = useState(0);
+  const [locked, setLocked] = useState<{ heldMs: number; busted: boolean } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const holdStartRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
+
+  // Reset on new round.
+  useEffect(() => {
+    setHolding(false);
+    setHeldMs(0);
+    setLocked(null);
+    setError(null);
+    setSubmitting(false);
+    holdStartRef.current = null;
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+  }, [round?.number, round?.gameId]);
+
+  const doSubmit = useCallback(
+    (finalMs: number, busted: boolean) => {
+      if (submitting) return;
+      setSubmitting(true);
+      setError(null);
+      setLocked({ heldMs: finalMs, busted });
+      getSocket().emit(
+        "player:submit",
+        { text: JSON.stringify({ heldMs: finalMs, busted }) },
+        (res) => {
+          setSubmitting(false);
+          if (!res.ok) {
+            setError(res.reason);
+            // Let the player try again on server rejection.
+            setLocked(null);
+          }
+        }
+      );
+    },
+    [submitting]
+  );
+
+  // Animation loop while holding — updates heldMs at ~60fps. Auto-busts
+  // when the bar caps out.
+  useEffect(() => {
+    if (!holding) return;
+    function tick() {
+      if (holdStartRef.current == null) return;
+      const elapsed = Date.now() - holdStartRef.current;
+      if (elapsed >= CHICKEN_CAP_MS) {
+        setHeldMs(CHICKEN_CAP_MS);
+        setHolding(false);
+        holdStartRef.current = null;
+        doSubmit(CHICKEN_CAP_MS, true);
+        return;
+      }
+      setHeldMs(elapsed);
+      rafRef.current = requestAnimationFrame(tick);
+    }
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [holding, doSubmit]);
+
+  function start() {
+    if (locked || submitting) return;
+    holdStartRef.current = Date.now();
+    setHeldMs(0);
+    setHolding(true);
+  }
+  function release() {
+    if (!holding || holdStartRef.current == null) return;
+    const elapsed = Math.min(CHICKEN_CAP_MS, Date.now() - holdStartRef.current);
+    setHolding(false);
+    holdStartRef.current = null;
+    setHeldMs(elapsed);
+    // Treat a <250ms "tap" as a stumble, not a commit.
+    if (elapsed < 250) {
+      setLocked(null);
+      return;
+    }
+    doSubmit(elapsed, false);
+  }
+
+  if (!round) return null;
+  const pct = Math.min(100, (heldMs / CHICKEN_CAP_MS) * 100);
+  const displayMs = locked?.heldMs ?? heldMs;
+  const busted = locked?.busted ?? false;
+  return (
+    <div className="cc-card p-4">
+      <SubmitHeader game={game} round={round} />
+      <div className="mt-3 text-center text-sm text-mist/70">
+        {locked
+          ? busted
+            ? "You held too long — busted."
+            : "Locked in. Fingers crossed."
+          : holding
+          ? "Don't let it max out…"
+          : "Press and hold. Release before the bar caps."}
+      </div>
+      <button
+        type="button"
+        aria-label="Hold"
+        onPointerDown={start}
+        onPointerUp={release}
+        onPointerCancel={release}
+        onPointerLeave={() => {
+          if (holding) release();
+        }}
+        disabled={!!locked || submitting || !!submitted}
+        className={`relative mt-4 grid h-56 w-full select-none place-items-center overflow-hidden rounded-3xl border text-lg font-bold tracking-widest uppercase transition ${
+          busted
+            ? "border-ember/70 bg-ember/20 text-ember"
+            : locked
+            ? "border-neon/60 bg-neon/10 text-neon"
+            : holding
+            ? "border-ember bg-ember/20 text-white shadow-[0_0_40px_rgba(255,79,123,0.6)]"
+            : "border-white/20 bg-white/5 text-mist/80 active:scale-[0.99]"
+        }`}
+      >
+        <div
+          className={`absolute inset-x-0 bottom-0 origin-bottom transition-[height] ${
+            busted
+              ? "bg-ember/60"
+              : holding
+              ? "bg-gradient-to-t from-ember via-ember/80 to-sol"
+              : "bg-neon/40"
+          }`}
+          style={{ height: `${pct}%` }}
+          aria-hidden
+        />
+        <div className="relative z-10 flex flex-col items-center gap-1">
+          <span>
+            {busted
+              ? "BUST"
+              : locked
+              ? "LOCKED"
+              : holding
+              ? "HOLDING"
+              : "HOLD"}
+          </span>
+          <span className="font-mono text-sm text-white/90">
+            {(displayMs / 1000).toFixed(2)}s
+          </span>
+        </div>
+      </button>
+      <div className="mt-3 flex items-center justify-between text-xs text-mist/60">
+        <span>Cap {(CHICKEN_CAP_MS / 1000).toFixed(0)}s</span>
+        <span>Longer held = more points • Cap = bust</span>
+      </div>
+      {error && (
+        <div role="alert" className="mt-2 text-sm text-ember">
+          {error}
+        </div>
       )}
     </div>
   );

@@ -324,20 +324,24 @@ export const GAMES: Record<string, GameDefinition> = {
     name: "Chicken",
     tagline: "Hold to build. Release before it maxes.",
     description:
-      "A bar fills on the TV. Hold your phone button to score — release before it hits the top or lose the round. Last to release with a valid score gets a bonus.",
+      "A bar fills on your phone. Hold to score — release before it hits the top or you bust with zero. Biggest valid hold banks the round bonus.",
     scoring: "hold",
     flow: "reaction",
-    submissionKind: "TAP", // placeholder; real "HOLD" kind lands with the build
+    submissionKind: "HOLD",
     secretCriterion: false,
     usesCriterion: false,
     submissionPlaceholder: "",
     submissionLabel: "",
     voteInstruction: () => "",
     revealKicker: "WHO CHICKENED OUT",
-    seedPrompts: [],
+    submitSeconds: 20,
+    seedPrompts: [
+      { text: "Hold your nerve. Release before the bar maxes.", rating: "FAMILY" },
+      { text: "Further you hold, more you score. Max = bust.", rating: "FAMILY" },
+      { text: "Cool heads win. Last valid release gets a bonus.", rating: "FAMILY" },
+    ],
     accent: "ember",
-    status: "comingSoon",
-    comingSoonNote: "Needs hold-and-release phone input + live TV bar.",
+    status: "live",
   },
 
   "pixel-war": {
